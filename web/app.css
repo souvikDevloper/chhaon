@@ -252,3 +252,7 @@ main { flex: 1; padding: 16px 16px 112px; }
   .now { animation: rise .35s ease-out both; }
   @keyframes rise { from { transform: translateY(8px); } }
 }
+
+.contrast p { margin: 0 0 8px; }
+.contrast .hot { font-size: 18px; color: var(--ink-2); }
+.contrast .bad { font-size: 22px; font-weight: 800; color: var(--extreme); }

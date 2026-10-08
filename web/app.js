@@ -367,6 +367,13 @@ function viewReplay(key) {
       <p class="legend">${t().legend}</p>
       <p class="impact">${esc(t().impact(p.unsafe_hours_avoided, fmtMins(p.crew.planned_minutes), fmtMins(p.crew.target_minutes)))}</p>
     </section>
+    ${(() => {
+      const day = p.crew.hours.filter((h) => h.hour >= 6 && h.hour < 19);
+      const hot = day.reduce((a, b) => (b.air_temp > a.air_temp ? b : a));
+      const bad = day.reduce((a, b) => (b.wbgt > a.wbgt ? b : a));
+      const outside = m.official_window ? day.filter((h) => h.status === "stop" && !(h.start >= m.official_window[0] && h.start < m.official_window[1])).length : 0;
+      return `<div class="card contrast"><p class="hot">${esc(t().hottestAir(hot.start, hot.air_temp))}</p><p class="bad">${esc(t().mostDangerous(bad.start, bad.wbgt))}</p>${bad.hour !== hot.hour ? `<p>${esc(t().thermoWrong)}</p>` : ""}${outside ? `<p><b>${esc(t().outsideBan(outside))}</b></p>` : ""}</div>`;
+    })()}
     <div class="quote"><b>${t().replayWhat}</b><br>${esc(m.what_happened)} <a href="${esc(m.source_url)}" target="_blank" rel="noopener">${esc(m.source)}</a></div>
     <p class="small" style="margin-top:12px">${t().replayData}</p>`;
 }

@@ -4,7 +4,7 @@
 
 Environmental Hacks, Bharat Builds Tour 2026 · **Track: Heat and Water** (heatwaves)
 
-- **Live app:** _added after deploy_
+- **Live app:** https://d2cvj3mcid9pim.cloudfront.net (tap "Open the demo site"; no sign-up)
 - **Demo video:** _added after recording_
 - **Architecture:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
@@ -53,6 +53,16 @@ Each service does a job you can see in the demo. Details in [docs/ARCHITECTURE.m
 | **AWS SAM / CloudFormation** | The whole stack in one template. Least-privilege IAM per function. |
 
 **Deliberately not used:** SMS (Indian SMS needs TRAI DLT sender and template registration, which takes longer than a hackathon); SageMaker (there is no model to train: physics and published limits do the job); always-on servers (every component is pay-per-use).
+
+## What the real data showed
+
+We ran the planner on the actual (ERA5) weather of 30 May 2024:
+
+- **Aurangabad, Bihar:** the air was hottest at 14:00 (44.7°C), but the most dangerous hour was **09:00** (WBGT 37.9°C): humid, still morning air in full sun. At 14:00, WBGT was 32.4°C.
+- **Rourkela, Odisha:** heavy work was past the safe limit from **06:00 to 17:00**. The official 11:00–15:00 ban covered four of those eleven hours.
+- **Howrah, 8 October 2026** (the day we started): air 29°C at 09:00, WBGT 33.6°C. October, and heavy work should still pause 08:00–13:00.
+
+The thermometer points at the wrong hour. These checks are in `backend/tests/test_real_data.py`, along with a validation of the wet-bulb calculation against Open-Meteo's own wet-bulb output (mean difference −0.05°C, worst 0.46°C over 96 hours).
 
 ## Method
 

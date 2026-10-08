@@ -30,7 +30,6 @@ Globals:
     MemorySize: 512
     Timeout: 29
     Tracing: Active
-    CodeUri: ../backend/
     Environment:
       Variables:
         TABLE_NAME: !Ref Table
@@ -141,6 +140,7 @@ Resources:
   ApiFunction:
     Type: AWS::Serverless::Function
     Properties:
+      CodeUri: ../backend/
       Handler: handlers.api.handler
       Description: Sites, plans, schedules, feed, incidents, replays
       Environment:
@@ -179,6 +179,7 @@ Resources:
   AskFunction:
     Type: AWS::Serverless::Function
     Properties:
+      CodeUri: ../backend/
       Handler: handlers.ask.handler
       Description: Bedrock agent (Strands if packaged, else Converse) with planner tools
       MemorySize: 1024
@@ -227,6 +228,7 @@ Resources:
   AnnounceFunction:
     Type: AWS::Serverless::Function
     Properties:
+      CodeUri: ../backend/
       Handler: handlers.jobs.announce
       Description: Fired by a one-time schedule; speaks the break in Hindi via Polly and posts it to the site feed
       Policies:
@@ -240,6 +242,7 @@ Resources:
   MorningFunction:
     Type: AWS::Serverless::Function
     Properties:
+      CodeUri: ../backend/
       Handler: handlers.jobs.morning
       Description: 05:00 IST every day - plan each real site and schedule its breaks
       Timeout: 300
@@ -268,6 +271,7 @@ Resources:
   ProtocolFunction:
     Type: AWS::Serverless::Function
     Properties:
+      CodeUri: ../backend/
       Handler: handlers.protocol_task.handler
       Description: One step of the heat-illness protocol per call
       Environment:
