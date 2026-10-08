@@ -1,0 +1,8 @@
+build/
+scripts/queue/
+scripts/logs/
+scripts/commit-message.txt
+__pycache__/
+*.pyc
+.venv/
+.DS_Store

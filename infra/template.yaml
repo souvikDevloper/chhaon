@@ -1,0 +1,531 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Chhaon - heat-safe shifts for India's outdoor workers. Serverless: CloudFront + S3 app,
+  HTTP API + Lambda, DynamoDB, EventBridge Scheduler break timers, Step Functions heat-illness
+  protocol, Polly Hindi voice, Bedrock agent, Amazon Location hospitals, CloudWatch impact metrics.
+
+Parameters:
+  ModelId:
+    Type: String
+    Default: us.amazon.nova-2-lite-v1:0
+    Description: Bedrock model or inference profile for the assistant
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Safety officer email for emergencies and budget alerts (optional)
+  StrandsLayerArn:
+    Type: String
+    Default: ""
+    Description: Optional Lambda layer with the Strands Agents SDK (the agent falls back to the Converse API without it)
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  HasStrands: !Not [!Equals [!Ref StrandsLayerArn, ""]]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    MemorySize: 512
+    Timeout: 29
+    Tracing: Active
+    CodeUri: ../backend/
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref Table
+        WEB_BUCKET: !Ref WebBucket
+        POWERTOOLS_SERVICE_NAME: chhaon
+
+Resources:
+  # ---------- data ----------
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-test-audio
+            Status: Enabled
+            Prefix: audio/
+            ExpirationInDays: 90
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Statement:
+          - Sid: CloudFrontRead
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  # ---------- edge ----------
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: Chhaon
+        HttpVersion: http2and3
+        PriceClass: PriceClass_200   # includes India edge locations
+        DefaultRootObject: index.html
+        Origins:
+          - Id: web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !Ref OriginAccessControl
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          - Id: api
+            DomainName: !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+            CustomOriginConfig: { OriginProtocolPolicy: https-only, OriginSSLProtocols: [TLSv1.2] }
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # CachingOptimized
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # SecurityHeadersPolicy
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # AllViewerExceptHostHeader
+            Compress: true
+
+  # ---------- API ----------
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 25
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.api.handler
+      Description: Sites, plans, schedules, feed, incidents, replays
+      Environment:
+        Variables:
+          PROTOCOL_ARN: !Ref ProtocolStateMachine
+          ANNOUNCE_FN_ARN: !GetAtt AnnounceFunction.Arn
+          SCHEDULER_ROLE_ARN: !GetAtt SchedulerRole.Arn
+          SCHEDULE_GROUP: !Ref ScheduleGroup
+      Events:
+        Api:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: "/api/{proxy+}", Method: ANY }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3CrudPolicy: { BucketName: !Ref WebBucket }
+        - Statement:
+            - Effect: Allow
+              Action: [polly:SynthesizeSpeech]
+              Resource: "*"
+            - Effect: Allow
+              Action: [scheduler:CreateSchedule, scheduler:DeleteSchedule, scheduler:GetSchedule]
+              Resource: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${ScheduleGroup}/*"
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt SchedulerRole.Arn
+            - Effect: Allow
+              Action: [states:StartExecution]
+              Resource: !Ref ProtocolStateMachine
+            - Effect: Allow
+              Action: [states:SendTaskSuccess, states:SendTaskFailure]
+              Resource: "*"
+            - Effect: Allow
+              Action: [geo-places:Geocode, geo-places:SearchText, geo-places:SearchNearby]
+              Resource: !Sub "arn:aws:geo-places:${AWS::Region}::provider/default"
+
+  AskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.ask.handler
+      Description: Bedrock agent (Strands if packaged, else Converse) with planner tools
+      MemorySize: 1024
+      Layers: !If [HasStrands, [!Ref StrandsLayerArn], !Ref AWS::NoValue]
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+      Events:
+        Ask:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: /api/ask, Method: POST }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+              Resource:
+                - "arn:aws:bedrock:*::foundation-model/*"
+                - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
+                - "arn:aws:bedrock:*::inference-profile/*"
+
+  # ---------- break timers ----------
+  ScheduleGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-breaks"
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { aws:SourceAccount: !Ref AWS::AccountId }
+      Policies:
+        - PolicyName: invoke-announce
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: [!GetAtt AnnounceFunction.Arn, !Sub "${AnnounceFunction.Arn}:*"]
+
+  AnnounceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.jobs.announce
+      Description: Fired by a one-time schedule; speaks the break in Hindi via Polly and posts it to the site feed
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3CrudPolicy: { BucketName: !Ref WebBucket }
+        - Statement:
+            - Effect: Allow
+              Action: [polly:SynthesizeSpeech]
+              Resource: "*"
+
+  MorningFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.jobs.morning
+      Description: 05:00 IST every day - plan each real site and schedule its breaks
+      Timeout: 300
+      Environment:
+        Variables:
+          ANNOUNCE_FN_ARN: !GetAtt AnnounceFunction.Arn
+          SCHEDULER_ROLE_ARN: !GetAtt SchedulerRole.Arn
+          SCHEDULE_GROUP: !Ref ScheduleGroup
+      Events:
+        Daily:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(0 5 * * ? *)
+            ScheduleExpressionTimezone: Asia/Kolkata
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - Statement:
+            - Effect: Allow
+              Action: [scheduler:CreateSchedule, scheduler:DeleteSchedule]
+              Resource: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${ScheduleGroup}/*"
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt SchedulerRole.Arn
+
+  # ---------- heat-illness protocol ----------
+  ProtocolFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.protocol_task.handler
+      Description: One step of the heat-illness protocol per call
+      Environment:
+        Variables:
+          ALERT_TOPIC_ARN: !Ref AlertTopic
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - SNSPublishMessagePolicy: { TopicName: !GetAtt AlertTopic.TopicName }
+        - Statement:
+            - Effect: Allow
+              Action: [geo-places:SearchNearby, geo-places:SearchText]
+              Resource: !Sub "arn:aws:geo-places:${AWS::Region}::provider/default"
+
+  ProtocolStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: STANDARD
+      Tracing: { Enabled: true }
+      Policies:
+        - LambdaInvokePolicy: { FunctionName: !Ref ProtocolFunction }
+      DefinitionSubstitutions:
+        Fn: !GetAtt ProtocolFunction.Arn
+      Definition:
+        Comment: Heat-illness protocol for one worker (India NCDC National Action Plan on Heat Related Illnesses)
+        StartAt: Begin
+        States:
+          Begin:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters: { FunctionName: "${Fn}", Payload: { action: begin, state.$: "$" } }
+            OutputPath: $.Payload
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 1
+                MaxAttempts: 3
+                BackoffRate: 2
+            Next: Triage
+          Triage:
+            Type: Choice
+            Choices:
+              - { Variable: $.level, StringEquals: red, Next: Emergency }
+              - { Variable: $.level, StringEquals: green, Next: Advice }
+            Default: FirstAid
+          FirstAid:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters: { FunctionName: "${Fn}", Payload: { action: care, state.$: "$" } }
+            OutputPath: $.Payload
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 1
+                MaxAttempts: 3
+                BackoffRate: 2
+            Next: WaitBeforeRecheck
+          WaitBeforeRecheck:
+            Type: Wait
+            SecondsPath: $.wait_seconds
+            Next: Recheck
+          Recheck:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+            Parameters:
+              FunctionName: "${Fn}"
+              Payload: { action: ask, question: recheck, token.$: "$$.Task.Token", state.$: "$" }
+            ResultPath: $.recheck
+            TimeoutSeconds: 900
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 1
+                MaxAttempts: 3
+                BackoffRate: 2
+            Catch:
+              - { ErrorEquals: [States.Timeout], ResultPath: $.timeout, Next: Escalate }
+            Next: Decide
+          Decide:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters: { FunctionName: "${Fn}", Payload: { action: decide, state.$: "$" } }
+            OutputPath: $.Payload
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 1
+                MaxAttempts: 3
+                BackoffRate: 2
+            Next: AfterRecheck
+          AfterRecheck:
+            Type: Choice
+            Choices:
+              - { Variable: $.level, StringEquals: resolved, Next: Recovered }
+              - { Variable: $.level, StringEquals: red, Next: Emergency }
+            Default: FirstAid
+          Emergency:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters: { FunctionName: "${Fn}", Payload: { action: emergency, state.$: "$" } }
+            OutputPath: $.Payload
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 1
+                MaxAttempts: 3
+                BackoffRate: 2
+            Next: AwaitHandover
+          AwaitHandover:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+            Parameters:
+              FunctionName: "${Fn}"
+              Payload: { action: ask, question: handover, token.$: "$$.Task.Token", state.$: "$" }
+            ResultPath: $.handover
+            TimeoutSecondsPath: $.handover_timeout
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 1
+                MaxAttempts: 3
+                BackoffRate: 2
+            Catch:
+              - { ErrorEquals: [States.Timeout], ResultPath: $.timeout, Next: Escalate }
+            Next: HandedOver
+          HandedOver:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters: { FunctionName: "${Fn}", Payload: { action: close, state.$: "$" } }
+            OutputPath: $.Payload
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 1
+                MaxAttempts: 3
+                BackoffRate: 2
+            End: true
+          Escalate:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters: { FunctionName: "${Fn}", Payload: { action: escalate, state.$: "$" } }
+            OutputPath: $.Payload
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 1
+                MaxAttempts: 3
+                BackoffRate: 2
+            End: true
+          Advice:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters: { FunctionName: "${Fn}", Payload: { action: care, state.$: "$" } }
+            OutputPath: $.Payload
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 1
+                MaxAttempts: 3
+                BackoffRate: 2
+            End: true
+          Recovered:
+            Type: Succeed
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Chhaon alerts
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # ---------- observability ----------
+  ApiLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${ApiFunction}", RetentionInDays: 14 }
+  AskLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${AskFunction}", RetentionInDays: 14 }
+  AnnounceLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${AnnounceFunction}", RetentionInDays: 14 }
+  MorningLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${MorningFunction}", RetentionInDays: 14 }
+  ProtocolLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${ProtocolFunction}", RetentionInDays: 14 }
+
+  ApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Chhaon API errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref ApiFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+
+  ProtocolFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A heat-illness protocol run failed - check it now
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions: [{ Name: StateMachineArn, Value: !Ref ProtocolStateMachine }]
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${AWS::StackName}-impact"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {"type":"text","x":0,"y":0,"width":24,"height":2,"properties":{"markdown":"# Chhaon - heat-safe shifts\nUnsafe work-hours moved out of the heat, breaks announced on time, and every heat-illness case followed through."}},
+            {"type":"metric","x":0,"y":2,"width":8,"height":6,"properties":{"title":"Unsafe work-hours avoided","region":"${AWS::Region}","stat":"Sum","period":86400,"view":"singleValue","metrics":[["Chhaon","UnsafeHoursAvoided","Service","chhaon"]]}},
+            {"type":"metric","x":8,"y":2,"width":8,"height":6,"properties":{"title":"Break announcements delivered","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","AnnouncementsDelivered","Service","chhaon"]]}},
+            {"type":"metric","x":16,"y":2,"width":8,"height":6,"properties":{"title":"Heat-illness cases by level","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","Incidents","Level","red"],["...","amber"],["...","yellow"],["...","green"]]}},
+            {"type":"metric","x":0,"y":8,"width":8,"height":6,"properties":{"title":"Plans published","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","PlansPublished","Service","chhaon"]]}},
+            {"type":"metric","x":8,"y":8,"width":8,"height":6,"properties":{"title":"Protocol runs","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["AWS/States","ExecutionsStarted","StateMachineArn","${ProtocolStateMachine}"],[".","ExecutionsSucceeded",".","."],[".","ExecutionsFailed",".","."]]}},
+            {"type":"metric","x":16,"y":8,"width":8,"height":6,"properties":{"title":"Assistant answers by engine","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","AgentAnswers","Engine","strands"],["...","converse"],["...","rules"]]}}
+          ]
+        }
+
+  Budget:
+    Type: AWS::Budgets::Budget
+    Condition: HasAlertEmail
+    Properties:
+      Budget:
+        BudgetName: !Sub "${AWS::StackName}-monthly"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: 15, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80 }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail }]
+
+Outputs:
+  SiteUrl:
+    Value: !Sub "https://${Distribution.DomainName}"
+  ApiUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  WebBucketName:
+    Value: !Ref WebBucket
+  DistributionId:
+    Value: !Ref Distribution
+  TableName:
+    Value: !Ref Table
+  ProtocolStateMachineArn:
+    Value: !Ref ProtocolStateMachine
+  ScheduleGroupName:
+    Value: !Ref ScheduleGroup
+  DashboardUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${AWS::StackName}-impact"

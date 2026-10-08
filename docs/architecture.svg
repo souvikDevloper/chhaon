@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" font-family="Mukta, 'Noto Sans', Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#4a5b57"/></marker>
+    <style>
+      .box{fill:#fff;stroke:#0e5e57;stroke-width:2;rx:10}
+      .aws{fill:#eef3f2;stroke:#cfd9d7;stroke-width:1.5}
+      .t{font-size:19px;font-weight:700;fill:#13221f}
+      .s{font-size:14.5px;fill:#4a5b57}
+      .h{font-size:15px;font-weight:700;fill:#0e5e57}
+      .l{stroke:#4a5b57;stroke-width:2;fill:none;marker-end:url(#a)}
+      .d{stroke:#4a5b57;stroke-width:2;fill:none;stroke-dasharray:6 5;marker-end:url(#a)}
+      .red{fill:#fbd9d5;stroke:#b42318;stroke-width:2}
+    </style>
+  </defs>
+  <rect width="1200" height="760" fill="#ffffff"/>
+  <text x="40" y="48" font-size="30" font-weight="800" fill="#08403b">Chhaon on AWS</text>
+  <text x="40" y="76" class="s">Serverless, event-driven. The model explains; deterministic code makes every safety call.</text>
+
+  <!-- user -->
+  <rect x="40" y="120" width="210" height="120" class="box"/>
+  <text x="58" y="152" class="t">Supervisor's phone</text>
+  <text x="58" y="176" class="s">Hindi-first web app (PWA)</text>
+  <text x="58" y="198" class="s">site speaker over Bluetooth</text>
+  <text x="58" y="220" class="s">works offline from cache</text>
+
+  <rect x="290" y="96" width="870" height="630" rx="18" class="aws"/>
+  <text x="310" y="124" class="h">AWS · ap-south-1 (Mumbai)</text>
+
+  <rect x="310" y="140" width="180" height="90" class="box"/>
+  <text x="326" y="172" class="t">CloudFront</text>
+  <text x="326" y="196" class="s">S3 app + audio, /api/*</text>
+  <text x="326" y="216" class="s">to the HTTP API</text>
+  <path d="M250 180 H306" class="l"/>
+
+  <rect x="530" y="140" width="180" height="90" class="box"/>
+  <text x="546" y="172" class="t">API Gateway</text>
+  <text x="546" y="196" class="s">HTTP API, throttled</text>
+  <path d="M490 185 H526" class="l"/>
+
+  <rect x="760" y="130" width="380" height="110" class="box"/>
+  <text x="776" y="162" class="t">Lambda: planner (Python, arm64)</text>
+  <text x="776" y="186" class="s">Open-Meteo forecast → Liljegren WBGT per hour</text>
+  <text x="776" y="208" class="s">→ ACGIH safe minutes → shift that keeps the pay</text>
+  <text x="776" y="230" class="s">unit-tested; same code in tests, API and agent tools</text>
+  <path d="M710 185 H756" class="l"/>
+
+  <rect x="760" y="270" width="380" height="96" class="box"/>
+  <text x="776" y="302" class="t">Bedrock (Nova 2 Lite) + Strands</text>
+  <text x="776" y="326" class="s">Hindi / English answers; tools call the planner</text>
+  <text x="776" y="348" class="s">and the first-aid rules. Never decides safety.</text>
+  <path d="M620 230 C620 300 700 318 756 318" class="l"/>
+
+  <rect x="310" y="270" width="250" height="110" class="box"/>
+  <text x="326" y="302" class="t">EventBridge Scheduler</text>
+  <text x="326" y="326" class="s">one at() timer per break,</text>
+  <text x="326" y="348" class="s">deleted after it fires;</text>
+  <text x="326" y="370" class="s">cron 05:00 IST plans every site</text>
+  <path d="M860 240 C860 256 560 250 450 266" class="d"/>
+
+  <rect x="310" y="420" width="250" height="100" class="box"/>
+  <text x="326" y="452" class="t">Lambda: announce</text>
+  <text x="326" y="476" class="s">Polly Kajal speaks Hindi;</text>
+  <text x="326" y="498" class="s">MP3 cached in S3</text>
+  <path d="M435 380 V416" class="l"/>
+
+  <rect x="610" y="420" width="250" height="100" class="box"/>
+  <text x="626" y="452" class="t">DynamoDB</text>
+  <text x="626" y="476" class="s">sites, plans, feed, incidents</text>
+  <text x="626" y="498" class="s">single table, TTL, PITR</text>
+  <path d="M560 470 H606" class="l"/>
+  <path d="M772 240 C742 272 735 360 735 416" class="d"/>
+
+  <rect x="900" y="420" width="240" height="160" class="red"/>
+  <text x="916" y="452" class="t">Step Functions</text>
+  <text x="916" y="476" class="s">heat-illness protocol</text>
+  <text x="916" y="498" class="s">(India NCDC guidance):</text>
+  <text x="916" y="520" class="s">first aid → wait 30 min →</text>
+  <text x="916" y="542" class="s">re-check (task token) →</text>
+  <text x="916" y="564" class="s">108 + hospitals, or escalate</text>
+  <path d="M1140 200 H1152 V470 H1144" class="d"/>
+
+  <rect x="610" y="570" width="250" height="90" class="box"/>
+  <text x="626" y="602" class="t">Amazon Location</text>
+  <text x="626" y="626" class="s">site search, nearest hospitals</text>
+  <path d="M896 600 H864" class="l"/>
+
+  <rect x="900" y="610" width="240" height="96" class="box"/>
+  <text x="916" y="642" class="t">SNS + CloudWatch</text>
+  <text x="916" y="666" class="s">safety-officer alerts, alarms,</text>
+  <text x="916" y="688" class="s">"unsafe hours avoided" metric</text>
+  <path d="M1020 580 V606" class="l"/>
+
+  <rect x="310" y="570" width="250" height="90" class="box"/>
+  <text x="326" y="602" class="t">Infrastructure as code</text>
+  <text x="326" y="626" class="s">one SAM template, 25 resources,</text>
+  <text x="326" y="648" class="s">least-privilege IAM per function</text>
+</svg>

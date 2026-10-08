@@ -1,0 +1,10 @@
+{
+  "name": "Chhaon - heat-safe shifts",
+  "short_name": "Chhaon",
+  "start_url": "/#/today",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0e5e57",
+  "lang": "hi",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
