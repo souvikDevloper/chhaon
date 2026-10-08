@@ -8,6 +8,12 @@ Environmental Hacks, Bharat Builds Tour 2026 · **Track: Heat and Water** (heatw
 - **Demo video:** _added after recording_
 - **Architecture:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
+<p>
+<img src="docs/screens/today-hi.png" width="230" alt="Today: heavy work stopped until 13:00, WBGT 32.2 at 30.6°C air">
+<img src="docs/screens/emergency-hi.png" width="230" alt="Emergency: call 108, cooling steps, nearest hospitals">
+<img src="docs/screens/replay-en.png" width="230" alt="Replay of 30 May 2024 in Aurangabad: hottest air at 14:00, most dangerous hour at 09:00">
+</p>
+
 ![Chhaon on AWS](docs/architecture.svg)
 
 ---

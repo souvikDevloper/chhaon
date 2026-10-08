@@ -143,6 +143,7 @@ class ApiFlow(unittest.TestCase):
         code, res = call("POST", "/api/ask", {"site_id": demo["site_id"], "question": "कल दोपहर 2 बजे ढलाई कर सकते हैं?"}, ip="8.8.8.8", fn=ask.handler)
         self.assertEqual(code, 200, res)
         self.assertEqual(res["engine"], "rules")
+        self.assertIn("converse:ClientError", res["error"])  # really tried Bedrock, then fell back
         self.assertEqual(res["lang"], "hi")
         self.assertIn("WBGT", res["answer"])
 

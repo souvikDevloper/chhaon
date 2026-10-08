@@ -1,5 +1,5 @@
 # End-to-end check of the live stack through CloudFront.
-param([string]$Region = 'ap-south-1', [string]$Stack = 'chhaon', [switch]$Quick)
+param([string]$Region = 'ap-south-1', [string]$Stack = 'chhaon', [string]$Quick = '')
 $ErrorActionPreference = 'Continue'
 $env:AWS_PAGER = ''
 $base = aws cloudformation describe-stacks --region $Region --stack-name $Stack --query "Stacks[0].Outputs[?OutputKey=='SiteUrl'].OutputValue" --output text
@@ -64,7 +64,7 @@ if ($asked) {
     $r.data.timeline | ForEach-Object { Write-Output ("  {0} {1}: {2}" -f $_.t, $_.kind, $_.text) }
 }
 
-if (-not $Quick) {
+if ($Quick -ne 'true') {
     Write-Output 'waiting for the scheduled test announcement...'
     for ($k = 0; $k -lt 20; $k++) {
         Start-Sleep -Seconds 6

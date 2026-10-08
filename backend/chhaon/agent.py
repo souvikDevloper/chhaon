@@ -8,9 +8,11 @@ based answer is returned and labelled as such.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
+import time
 from typing import Callable
 
 import boto3
@@ -18,6 +20,10 @@ import boto3
 from . import planner, protocol, service
 
 MODEL_ID = os.environ.get("MODEL_ID", "us.amazon.nova-2-lite-v1:0")
+DEADLINE_S = float(os.environ.get("AGENT_DEADLINE_S", "18"))
+COOLDOWN_S = 300  # after a throttle or timeout, answer from the rules for 5 minutes
+_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+_blocked_until = 0.0
 
 SYSTEM = """You are Chhaon, a heat-safety assistant for construction site supervisors in India.
 Rules:
@@ -116,8 +122,14 @@ def _detect_lang(text: str) -> str:
     return "hi" if len(words & set(hinglish)) >= 2 else "en"
 
 
+def _bedrock():
+    from botocore.config import Config
+
+    return boto3.client("bedrock-runtime", config=Config(retries={"max_attempts": 2, "mode": "standard"}, read_timeout=20, connect_timeout=5))
+
+
 def _converse(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
-    client = boto3.client("bedrock-runtime")
+    client = _bedrock()
     tool_config = {"tools": [{"toolSpec": {"name": t["name"], "description": t["description"], "inputSchema": {"json": t["schema"]}}} for t in TOOL_SPECS]}
     messages = [{"role": "user", "content": [{"text": question}]}]
     used: list[str] = []
@@ -172,7 +184,9 @@ def _strands(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
         used.append("first_aid")
         return tools["first_aid"](symptoms)
 
-    model = BedrockModel(model_id=MODEL_ID, temperature=0.2, max_tokens=500)
+    from botocore.config import Config
+
+    model = BedrockModel(model_id=MODEL_ID, temperature=0.2, max_tokens=500, boto_client_config=Config(retries={"max_attempts": 2, "mode": "standard"}, read_timeout=20))
     agent = Agent(
         model=model,
         system_prompt=SYSTEM + f"\nToday is {service.today()} (Asia/Kolkata). Reply language: {'Hindi' if lang == 'hi' else 'English'}.",
@@ -210,22 +224,46 @@ def _rule_based(question: str, tools: dict, lang: str) -> str:
 
 
 def ask(site: dict, question: str, lang: str | None = None) -> dict:
+    """Strands agent, then the plain Converse loop, then rules, within a hard deadline.
+
+    Strands retries throttling with long backoff, so every model call runs in a
+    worker thread with a deadline; a throttle or timeout opens a short circuit
+    breaker so the next questions are answered at once from the plan.
+    """
+    global _blocked_until
     lang = lang if lang in ("hi", "en") else _detect_lang(question)
     tools = make_tools(site, lang)
-    engine = "strands"
-    try:
-        try:
-            text, used = _strands(question, tools, lang)
-        except ImportError:
-            engine = "converse"
-            text, used = _converse(question, tools, lang)
-        return {"answer": text, "tools_used": used, "engine": engine, "model": MODEL_ID, "lang": lang}
-    except Exception as exc:
-        return {
-            "answer": _rule_based(question, tools, lang),
-            "tools_used": ["day_plan"],
-            "engine": "rules",
-            "model_unavailable": True,
-            "error": type(exc).__name__,
-            "lang": lang,
-        }
+    errors: list[str] = []
+    deadline = time.monotonic() + DEADLINE_S
+    if time.time() < _blocked_until:
+        errors.append("model:cooldown")
+    else:
+        for engine, run in (("strands", _strands), ("converse", _converse)):
+            remaining = deadline - time.monotonic()
+            if remaining < 2:
+                errors.append(f"{engine}:no-time")
+                break
+            future = _pool.submit(run, question, tools, lang)
+            try:
+                text, used = future.result(timeout=remaining)
+                if text:
+                    return {"answer": text, "tools_used": used, "engine": engine, "model": MODEL_ID, "lang": lang}
+            except ImportError:
+                continue
+            except concurrent.futures.TimeoutError:
+                errors.append(f"{engine}:Timeout")
+                _blocked_until = time.time() + COOLDOWN_S
+                break
+            except Exception as exc:
+                errors.append(f"{engine}:{type(exc).__name__}")
+                if any(k in f"{type(exc).__name__} {exc}" for k in ("Throttl", "AccessDenied", "Too many tokens")):
+                    _blocked_until = time.time() + COOLDOWN_S
+                    break  # the same account limit applies to both engines
+    return {
+        "answer": _rule_based(question, tools, lang),
+        "tools_used": ["day_plan"],
+        "engine": "rules",
+        "model_unavailable": True,
+        "error": ",".join(errors) or "unavailable",
+        "lang": lang,
+    }

@@ -125,7 +125,7 @@ class FakeClient:
 
     # bedrock
     def converse(self, **kw):
-        raise ClientError("AccessDeniedException", "no model access in tests")
+        raise ClientError("ThrottlingException", "Too many tokens per day")
 
 
 class World:
@@ -147,5 +147,7 @@ def install() -> World:
     exc = types.ModuleType("botocore.exceptions")
     exc.ClientError = ClientError
     exc.BotoCoreError = type("BotoCoreError", (Exception,), {})
-    sys.modules.update({"boto3": boto3, "boto3.dynamodb": dyn, "boto3.dynamodb.conditions": cond, "botocore": botocore, "botocore.exceptions": exc})
+    cfg = types.ModuleType("botocore.config")
+    cfg.Config = lambda **kw: kw
+    sys.modules.update({"boto3": boto3, "boto3.dynamodb": dyn, "boto3.dynamodb.conditions": cond, "botocore": botocore, "botocore.exceptions": exc, "botocore.config": cfg})
     return world

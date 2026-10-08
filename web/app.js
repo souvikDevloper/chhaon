@@ -255,6 +255,7 @@ function viewToday() {
       ${stripHtml(p.crew.hours, "plan", isToday ? ns.n.h : -1)}
       <p class="legend">${t().legend}</p>
       <p class="impact">${esc(impact)}</p>
+      <a class="btn ghost block" style="margin-top:12px" href="${esc(shareUrl(P))}" target="_blank" rel="noopener">${t().share}</a>
       ${p.crew.shortfall_minutes > 0 ? `<p class="note">${esc(t().shortfall(p.crew.shortfall_minutes))}</p>` : ""}
       ${newbie}
     </section>
@@ -268,6 +269,25 @@ function viewToday() {
       </div>
       <ul class="feed">${feedItems.length ? feedItems.map(feedItem).join("") : `<li><span class="txt small">${t().feedEmpty}</span></li>`}</ul>
     </section>` : ""}`;
+}
+
+function workRanges(hours) {
+  const hm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const out = [];
+  let start = null, last = null;
+  const flush = () => { if (start) out.push(`${start}–${hm(last.hour * 60 + last.work_minutes)}`); start = null; };
+  for (const h of hours) {
+    if (h.work_minutes > 0) { if (!start) start = h.start; last = h; }
+    else flush();
+  }
+  flush();
+  return out.join(", ");
+}
+
+function shareUrl(P) {
+  const p = P.plan;
+  const text = t().shareText(P.site.name, fmtDate(P.date), workRanges(p.crew.hours) || "–", p.crew.stop_windows.map(([a, b]) => `${a}–${b}`).join(", "), `${p.peak_time} (WBGT ${p.peak_wbgt}°C)`);
+  return `https://wa.me/?text=${encodeURIComponent(text)}`;
 }
 
 function feedItem(f) {
@@ -300,19 +320,21 @@ function viewIncident() {
   const g = inc.guidance;
   const lvl = inc.level === "resolved" ? "green" : inc.level;
   const q = inc.pending;
+  const question = q ? `<section class="ask-card" aria-live="assertive">
+      <p>${esc(inc.timeline.filter((x) => x.kind === "question").slice(-1)[0]?.text || "")}</p>
+      <div class="answers">${q.options.map((o) => `<button class="btn ${o === "worse" ? "red" : o === "better" ? "" : "ghost"} block" data-action="answer" data-answer="${o}">${esc(t().answers[o])}</button>`).join("")}</div>
+    </section>` : "";
+  const emergency = lvl === "red";
+  const steps = `<h3 style="margin-top:20px">${t().steps}</h3>
+    <ol class="steps">${g.steps.map((s) => `<li><span>${esc(s)}</span></li>`).join("")}</ol>`;
   return `
     <section class="level ${lvl}">
       <h2>${esc(g.title)}</h2>
       <div>${esc(inc.worker)}: ${inc.symptoms.map((s) => esc(t().symptoms[s] || s)).join(", ")}</div>
-      <div><b>${esc(t().status[inc.status] || inc.status)}</b></div>
+      ${inc.status !== "emergency" ? `<div><b>${esc(t().status[inc.status] || inc.status)}</b></div>` : ""}
       ${g.call_108 ? `<a class="btn block" href="tel:108">📞 ${t().call108}</a>` : ""}
     </section>
-    ${q ? `<section class="ask-card" aria-live="assertive">
-      <p>${esc(inc.timeline.filter((x) => x.kind === "question").slice(-1)[0]?.text || "")}</p>
-      <div class="answers">${q.options.map((o) => `<button class="btn ${o === "worse" ? "red" : o === "better" ? "" : "ghost"} block" data-action="answer" data-answer="${o}">${esc(t().answers[o])}</button>`).join("")}</div>
-    </section>` : ""}
-    <h3 style="margin-top:20px">${t().steps}</h3>
-    <ol class="steps">${g.steps.map((s) => `<li><span>${esc(s)}</span></li>`).join("")}</ol>
+    ${emergency ? steps + question : question + steps}
     ${inc.hospitals?.length ? `<h3 style="margin-top:20px">${t().hospitals}</h3><ul class="hosp">${inc.hospitals.map((h) => `<li><b>${esc(h.name)}</b><span class="small">${esc(h.address || "")}${h.distance_m ? ` · ${(h.distance_m / 1000).toFixed(1)} km` : ""}</span><div class="row">${h.phone ? `<a href="tel:${esc(h.phone)}">📞 ${esc(h.phone)}</a>` : ""}<a href="https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lon}" target="_blank" rel="noopener">${t().directions}</a></div></li>`).join("")}</ul>` : ""}
     <h3 style="margin-top:20px">${t().timeline}</h3>
     <ul class="timeline">${inc.timeline.map((x) => `<li><time>${fmtTime(x.t)}</time>${esc(x.kind === "answer" ? t().answers[x.text] || x.text : x.kind === "reported" ? x.text.split(", ").map((s) => t().symptoms[s] || s).join(", ") : x.text)}</li>`).join("")}</ul>
