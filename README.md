@@ -103,6 +103,6 @@ powershell -ExecutionPolicy Bypass -File scripts\jobs\deploy.ps1 -Region ap-sout
 
 ## Built with
 
-Python, plain JavaScript (no framework, no build step), AWS. AI tools used: **Claude (Anthropic)** as a coding agent.
+Python, plain JavaScript (no framework, no build step), AWS. AI tools used: **Claude (Anthropic)** as a coding agent. Inside the product, **gpt-oss-120b on Amazon Bedrock** writes the assistant's answers; it never makes a safety decision.
 
 MIT licence. Built by Souvik Ghosh during Environmental Hacks, 8–11 October 2026.

@@ -45,4 +45,5 @@ Area forecasts are not site measurements; the ACGIH table is a screening tool; C
 
 ## AI tools used
 
-Claude (Anthropic) as a coding agent for the code, tests, infrastructure and docs.
+- **Building it:** Claude (Anthropic) as a coding agent for the code, tests, infrastructure and docs.
+- **Inside the product:** OpenAI's open-weight gpt-oss-120b on Amazon Bedrock writes the assistant's answers from planner tool results. No AI model makes a safety decision: WBGT, limits, the shift plan, triage and escalation are deterministic, tested code, and announcements are fixed templates.
