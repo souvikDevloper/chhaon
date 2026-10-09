@@ -33,11 +33,11 @@ The thermometer points at the wrong hour. And on the day I started building, in 
 
 **A heat-illness case is a workflow that can wait.** AWS Step Functions runs the protocol: first aid, a 30-minute wait, then a `waitForTaskToken` step that pauses until the supervisor answers "better", "same" or "worse". Anything not clearly better escalates: call 108, the nearest hospitals from Amazon Location Service, and an SNS alert to the safety officer. If nobody answers, the timeout escalates too. Waiting 30 minutes costs nothing because no server holds the state.
 
-**The model explains; code decides.** An Amazon Bedrock agent answers questions like "कल दोपहर 2 बजे ढलाई कर सकते हैं?" ("can we pour concrete at 2 tomorrow?"), but every number comes from tools that call the same tested planner. Safety announcements are fixed templates, never generated text.
+**The model explains; code decides.** A model on Amazon Bedrock (gpt-oss-120b, in the Mumbai region) answers questions like "कल दोपहर 2 बजे ढलाई कर सकते हैं?" ("can we pour concrete at 2 tomorrow?"), but every number comes from tools that call the same tested planner. Safety announcements are fixed templates, never generated text.
 
 ## What fought back
 
-- **Bedrock quotas on a new account.** Every Nova quota on my brand-new account was applied at 0, and not adjustable from Service Quotas. The agent falls back to a rule-based answer and says so, which is how I'd want it to behave in production anyway.
+- **Bedrock quotas on a new account.** Every bedrock-runtime quota on my brand-new account was applied at 0, and support could not raise them for a new account. Bedrock's OpenAI-compatible endpoint (bedrock-mantle) has its own quotas and worked, so the assistant calls gpt-oss-120b there, signing each request with the Lambda's IAM role (SigV4) instead of an API key. Nova through Strands stays as the second engine, and if no model answers in 18 seconds the app gives a rule-based answer and says so.
 - **Hindi through PowerShell.** The AWS CLI reads `file://` inputs in the Windows code page; Devanagari came out garbled until I set `AWS_CLI_FILE_ENCODING=UTF-8`.
 - **CloudFormation and YAML anchors.** I reused a retry block with a YAML anchor; CloudFormation rejects aliases. Expanding them by hand fixed it.
 - **Designing for sunlight.** Dark themes look great on a laptop and are unreadable outside at noon. The app is white, high-contrast, and marks stopped hours with hatching as well as colour.

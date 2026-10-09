@@ -6,3 +6,6 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+scripts/queue-hold/
+scripts/jobs/cleanup-career-agent.ps1
+scripts/jobs/inventory.ps1

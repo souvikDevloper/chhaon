@@ -14,6 +14,10 @@ Parameters:
     Type: String
     Default: ""
     Description: Safety officer email for emergencies and budget alerts (optional)
+  MantleModel:
+    Type: String
+    Default: openai.gpt-oss-120b
+    Description: Model on the Bedrock Mantle (OpenAI-compatible) endpoint, signed with the function's IAM role
   StrandsLayerArn:
     Type: String
     Default: ""
@@ -181,12 +185,13 @@ Resources:
     Properties:
       CodeUri: ../backend/
       Handler: handlers.ask.handler
-      Description: Bedrock agent (Strands if packaged, else Converse) with planner tools
+      Description: Bedrock agent (Mantle gpt-oss-120b, then Strands/Converse) with planner tools
       MemorySize: 1024
       Layers: !If [HasStrands, [!Ref StrandsLayerArn], !Ref AWS::NoValue]
       Environment:
         Variables:
           MODEL_ID: !Ref ModelId
+          MANTLE_MODEL: !Ref MantleModel
       Events:
         Ask:
           Type: HttpApi
@@ -200,6 +205,9 @@ Resources:
                 - "arn:aws:bedrock:*::foundation-model/*"
                 - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
                 - "arn:aws:bedrock:*::inference-profile/*"
+            - Effect: Allow
+              Action: [bedrock-mantle:CreateInference]
+              Resource: "*"
 
   # ---------- break timers ----------
   ScheduleGroup:
@@ -499,7 +507,7 @@ Resources:
             {"type":"metric","x":16,"y":2,"width":8,"height":6,"properties":{"title":"Heat-illness cases by level","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","Incidents","Level","red"],["...","amber"],["...","yellow"],["...","green"]]}},
             {"type":"metric","x":0,"y":8,"width":8,"height":6,"properties":{"title":"Plans published","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","PlansPublished","Service","chhaon"]]}},
             {"type":"metric","x":8,"y":8,"width":8,"height":6,"properties":{"title":"Protocol runs","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["AWS/States","ExecutionsStarted","StateMachineArn","${ProtocolStateMachine}"],[".","ExecutionsSucceeded",".","."],[".","ExecutionsFailed",".","."]]}},
-            {"type":"metric","x":16,"y":8,"width":8,"height":6,"properties":{"title":"Assistant answers by engine","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","AgentAnswers","Engine","strands"],["...","converse"],["...","rules"]]}}
+            {"type":"metric","x":16,"y":8,"width":8,"height":6,"properties":{"title":"Assistant answers by engine","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","AgentAnswers","Engine","bedrock-mantle"],["...","strands"],["...","converse"],["...","rules"]]}}
           ]
         }
 

@@ -44,7 +44,11 @@ Begin → Triage ─red───────────────────
 - Demo sites wait 20 seconds instead of 30 minutes.
 
 ### 4. Ask
-`POST /api/ask` runs a separate Lambda with **Bedrock** (Nova 2 Lite via the global inference profile). Tools: `day_plan`, `check_task`, `first_aid`. The Strands Agents SDK drives the loop when its layer is attached; otherwise the same tools run through the Converse API. If Bedrock is unavailable, a rule-based answer is returned and labelled as such. Answers can be spoken with Polly.
+`POST /api/ask` runs a separate Lambda with **Amazon Bedrock**. Tools: `day_plan`, `check_task`, `first_aid`, all backed by the same planner code.
+
+- **First engine:** OpenAI's open-weight **gpt-oss-120b** on Bedrock's OpenAI-compatible endpoint (`bedrock-mantle.ap-south-1.api.aws/v1/chat/completions`). Requests are signed with SigV4 using the function's IAM role (`bedrock-mantle:CreateInference`), so there is no API key to store or leak. The function runs the tool-calling loop itself (up to 5 rounds). In a comparison on the same Hindi question, gpt-oss-120b, Qwen3 235B, Mistral Large 3 and gpt-oss-20b all chose the right tool; gpt-oss-120b was the fastest (about 1 s for both rounds) and is the default (template parameter `MantleModel`).
+- **Second engine:** Nova 2 Lite on bedrock-runtime, through the Strands Agents SDK when its layer is attached, otherwise the Converse API.
+- **Guard rails:** an 18-second deadline across engines; a throttled or failing backend is skipped for a few minutes; if nothing answers, a rule-based answer from the same tools is returned and labelled "AI model unavailable". The answer shows which tools it used and which model wrote it. Answers can be spoken with Polly. A CloudWatch metric counts answers by engine.
 
 ## Data model (one DynamoDB table)
 

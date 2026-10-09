@@ -356,7 +356,7 @@ function viewAsk() {
     <div class="qa">${S.qa.map((x, i) => `
       <p class="q">${esc(x.q)}</p>
       <div class="a">${x.a ? esc(x.a.answer) : esc(t().askThinking)}</div>
-      ${x.a ? `<div class="ev">${x.a.model_unavailable ? esc(t().askFallback) : esc(t().askEvidence((x.a.tools_used || []).join(", ") || "plan"))}${x.a.engine ? ` · ${esc(x.a.engine)}` : ""}</div>
+      ${x.a ? `<div class="ev">${x.a.model_unavailable ? esc(t().askFallback) : esc(t().askEvidence((x.a.tools_used || []).join(", ") || "plan"))}${x.a.engine && x.a.engine !== "rules" ? ` · Amazon Bedrock${x.a.model ? ` · ${esc(String(x.a.model).split(".").pop())}` : ""}` : ""}</div>
       <button class="btn ghost" style="margin-top:8px" data-action="speak" data-i="${i}">${I.play} ${t().speakAnswer}</button>` : ""}`).reverse().join("")}</div>`;
 }
 

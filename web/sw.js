@@ -1,5 +1,5 @@
 // Keeps the app shell and announcement audio available when the site's network drops.
-const SHELL = "chhaon-shell-v1";
+const SHELL = "chhaon-shell-v2";
 const AUDIO = "chhaon-audio-v1";
 const FILES = ["/", "/index.html", "/app.css", "/app.js", "/i18n.js", "/icon.svg", "/manifest.webmanifest"];
 

@@ -35,7 +35,7 @@ On a construction site the decision of when to stop is made by a site supervisor
 | **New workers protected** | Workers in their first week get the stricter limits and NIOSH's acclimatisation ramp (20% of a normal day on day 1, +20% per day). |
 | **Breaks announced on time, in Hindi** | Every rest, stop and restart becomes an EventBridge Scheduler timer. When it fires, Amazon Polly (Kajal) speaks it in Hindi; the phone plays it through a site speaker and keeps its screen awake. |
 | **Someone feels unwell** | Tap the symptoms. Triage and first-aid steps follow India's [National Action Plan on Heat Related Illnesses](https://ncdc.mohfw.gov.in/wp-content/uploads/2024/05/1.Nation-Action-plan-on-Heat-Related-llnesses.pdf). A Step Functions workflow waits 30 minutes, asks for a re-check, and escalates anything not clearly better: call 108, nearest hospitals from Amazon Location, email to the safety officer. |
-| **Ask in Hindi or English** | "कल दोपहर 2 बजे ढलाई कर सकते हैं?" An Amazon Bedrock agent answers using the planner as a tool. The model explains; it never makes the safety call. |
+| **Ask in Hindi or English** | "कल दोपहर 2 बजे ढलाई कर सकते हैं?" A model on Amazon Bedrock (gpt-oss-120b, Mumbai region) answers by calling the planner as a tool. The model explains; it never makes the safety call. |
 | **Replay a real day** | Run the planner on the actual weather of 30 May 2024 in Rourkela and Aurangabad and see what it would have said. |
 
 It is built for the person using it: Hindi first, readable in direct sunlight (white background, large type, hatching as well as colour), big touch targets, no sign-up, works on a cheap Android phone and keeps the last plan when the network drops.
@@ -50,7 +50,7 @@ Each service does a job you can see in the demo. Details in [docs/ARCHITECTURE.m
 | **Amazon EventBridge Scheduler** | One one-time `at()` schedule per announcement, in Asia/Kolkata time, deleted after it fires. Plus a 05:00 IST daily schedule that plans every registered site. No polling, nothing running between breaks. |
 | **AWS Step Functions** | The heat-illness protocol: first aid, a 30-minute wait, a re-check via task token, escalation on "same", "worse" or silence. |
 | **Amazon Polly** | Hindi announcements (Kajal, neural). Each sentence is synthesised once and cached in S3. |
-| **Amazon Bedrock** (Nova 2 Lite) + **Strands Agents** | The Hindi/English assistant. Tools: today's plan, check a task window, first aid. Falls back to a rule-based answer if the model is unavailable, and says so. |
+| **Amazon Bedrock** (OpenAI gpt-oss-120b in ap-south-1) | The Hindi/English assistant, called through Bedrock's OpenAI-compatible Chat Completions endpoint and signed with the Lambda's own IAM role (SigV4, no API keys). Tools: today's plan, check a task window, first aid. Nova 2 Lite through **Strands Agents** / the Converse API is the second engine. If no model answers within 18 seconds, a rule-based answer is shown and labelled as such. |
 | **Amazon Location Service** | Find the site by name; nearest hospitals for an emergency. |
 | **Amazon DynamoDB** | Sites, plans, the announcement feed and incidents in one table, with TTL on health data. |
 | **Amazon CloudFront + S3** | The app and the cached audio, served from India edge locations; `/api/*` routed to the HTTP API. |

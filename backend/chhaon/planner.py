@@ -349,8 +349,9 @@ def plan_day(slots: list[Slot], cfg: SiteConfig, date: str) -> DayPlan:
     return plan
 
 
-def check_window(slots: list[Slot], cfg: SiteConfig, start_hour: int, hours: int, workload: str | None = None) -> dict:
-    """Can a task of `hours` run from `start_hour`? Returns per-hour safety and the best alternative."""
+def check_window(slots: list[Slot], cfg: SiteConfig, start_hour: int, hours: int, workload: str | None = None, acclimatised: bool = True) -> dict:
+    """Can a task of `hours` run from `start_hour`? Returns per-hour safety and the best alternative.
+    acclimatised=False uses the stricter Action Limit for workers in their first week."""
     wl = workload or cfg.workload
     by_hour = {s.hour: s for s in slots}
 
@@ -360,7 +361,7 @@ def check_window(slots: list[Slot], cfg: SiteConfig, start_hour: int, hours: int
             s = by_hour.get(h)
             if s is None:
                 return None
-            lim = hour_limit(s.wbgt, wl, True, cfg.clothing)
+            lim = hour_limit(s.wbgt, wl, acclimatised, cfg.clothing)
             rows.append({"hour": _fmt(h), "wbgt": s.wbgt, "safe_minutes": lim.work_minutes, "band": lim.band})
         return {
             "start": _fmt(start),
@@ -375,7 +376,7 @@ def check_window(slots: list[Slot], cfg: SiteConfig, start_hour: int, hours: int
     options = [score(s) for s in range(cfg.window_start, cfg.window_end - hours + 1)]
     options = [o for o in options if o is not None]
     best = sorted(options, key=lambda o: (-o["min_safe_minutes"], o["max_wbgt"]))[:3]
-    return {"workload": wl, "asked": asked, "best": best}
+    return {"workload": wl, "new_workers": not acclimatised, "asked": asked, "best": best}
 
 
 def plan_from_weather(hourly: dict, utc_offset_seconds: int, cfg: SiteConfig, date: str) -> tuple[list[Slot], DayPlan]:

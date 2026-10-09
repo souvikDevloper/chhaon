@@ -45,9 +45,9 @@
   <path d="M710 185 H756" class="l"/>
 
   <rect x="760" y="270" width="380" height="96" class="box"/>
-  <text x="776" y="302" class="t">Bedrock (Nova 2 Lite) + Strands</text>
+  <text x="776" y="302" class="t">Bedrock: gpt-oss-120b (Mumbai)</text>
   <text x="776" y="326" class="s">Hindi / English answers; tools call the planner</text>
-  <text x="776" y="348" class="s">and the first-aid rules. Never decides safety.</text>
+  <text x="776" y="348" class="s">and first-aid rules. Nova/Strands fallback.</text>
   <path d="M620 230 C620 300 700 318 756 318" class="l"/>
 
   <rect x="310" y="270" width="250" height="110" class="box"/>

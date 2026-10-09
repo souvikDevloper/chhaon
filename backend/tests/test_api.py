@@ -154,6 +154,18 @@ class ApiFlow(unittest.TestCase):
         c = tools["check_task"]("tomorrow", 14, 3, "heavy")
         self.assertIn("best", c)
         self.assertEqual(tools["first_aid"](["seizure"])["level"], "red")
+        new = tools["check_task"]("tomorrow", 11, 2, None, True)
+        self.assertTrue(new["new_workers"])
+        self.assertLessEqual(new["asked"]["min_safe_minutes"], c["asked"]["min_safe_minutes"] if c["asked"] else 60)
+
+    def test_rule_fallback_answers_the_question_asked(self):
+        tools = agent.make_tools(service.DEMO_SITE, "hi")
+        text, used = agent._rule_based("एक मज़दूर को चक्कर आ रहा है और उल्टी हो रही है", tools, "hi")
+        self.assertEqual(used, ["first_aid"])
+        self.assertIn("थकावट", text)
+        text, used = agent._rule_based("kal subah 7 baje se 3 ghante chhat ka kaam?", tools, "hi")
+        self.assertEqual(used, ["check_task"])
+        self.assertIn("07:00–10:00", text)
 
     def test_morning_job_plans_real_sites_only(self):
         call("POST", "/api/demo", ip="4.4.4.4")
@@ -168,3 +180,31 @@ class ApiFlow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MantleAgent(unittest.TestCase):
+    def test_mantle_tool_loop(self):
+        replies = iter([
+            {"choices": [{"message": {"content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "check_task", "arguments": json.dumps({"day": "tomorrow", "start_hour": 14, "hours": 2})}}]}}]},
+            {"choices": [{"message": {"content": "नहीं। 14:00 पर WBGT ज़्यादा है; 17:00–19:00 बेहतर है।"}}]},
+        ])
+        seen = []
+
+        def fake_post(body, timeout=15.0):
+            seen.append(body)
+            return next(replies)
+
+        orig = agent._mantle_post
+        agent._mantle_post = fake_post
+        agent._blocked_until.clear()
+        try:
+            res = agent.ask(service.DEMO_SITE, "कल दोपहर 2 बजे ढलाई कर सकते हैं?")
+        finally:
+            agent._mantle_post = orig
+        self.assertEqual(res["engine"], "bedrock-mantle")
+        self.assertEqual(res["tools_used"], ["check_task"])
+        self.assertIn("17:00", res["answer"])
+        tool_msg = seen[1]["messages"][-1]
+        self.assertEqual(tool_msg["role"], "tool")
+        self.assertIn("best", json.loads(tool_msg["content"]))  # the real planner output went back to the model
+        self.assertEqual(seen[0]["tools"][0]["type"], "function")
