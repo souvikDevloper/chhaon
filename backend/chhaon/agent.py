@@ -33,8 +33,7 @@ _blocked_until: dict[str, float] = {}  # per backend: "mantle" (bedrock-mantle) 
 
 SYSTEM = """You are Chhaon, a heat-safety assistant for construction site supervisors in India.
 Rules:
-- Reply in the language and script of the question. Hindi or Hinglish question: answer in simple Hindi (Devanagari). English question: simple English only, no Hindi words.
-- Say times the way people speak: in Hindi "दोपहर 2 बजे", "शाम 5 से 7 बजे तक" (not "14:00" or "17-19 बजे"); in English "2 PM", "5 to 7 PM".
+- Reply in the language and script of the question (see the last line).
 - Use only numbers returned by tools. Never guess a temperature, WBGT or time. Call a tool first.
 - Day: "कल" / "kal" / "tomorrow" means day="tomorrow"; "आज" / "aaj" / "today" or no day means day="today". Say the same day back in the answer.
 - A question about a specific time or task ("कल दोपहर 2 बजे ढलाई?") needs check_task with a 24-hour start_hour (सुबह 7 बजे = 7, दोपहर 2 बजे = 14, शाम 5 बजे = 17). If no duration is given, use 2 hours. If the question is about new workers (नए मज़दूर, first week), set new_workers=true. General questions about the day need day_plan.
@@ -130,6 +129,9 @@ def make_tools(site: dict, lang: str) -> dict:
         state["trace"].append({"tool": "check_task", "args": args})
         res = planner.check_window(slots, service.site_config(site, date), int(start_hour), int(hours), workload or None, acclimatised=not new)
         res["date"] = date
+        for w in [res.get("asked")] + list(res.get("best") or []):
+            if w:
+                w["said"] = f"{announce.spoken_time(w['start'], lang)} – {announce.spoken_time(w['end'], lang)}"
         return res
 
     def first_aid(symptoms: list[str]) -> dict:
@@ -287,7 +289,12 @@ def _system(lang: str) -> str:
     from datetime import datetime
 
     now = datetime.now(service.IST).strftime("%H:%M")
-    return SYSTEM + f"\nToday is {service.today()}, time now {now} (Asia/Kolkata). Reply language: {'Hindi' if lang == 'hi' else 'English'}."
+    if lang == "hi":
+        style = ("Reply in simple Hindi (Devanagari). Say times the way people speak: \"दोपहर 2 बजे\", "
+                 "\"शाम 5 से 7 बजे तक\", not \"14:00\" or \"17-19 बजे\". Use the *_said fields from tools when they exist.")
+    else:
+        style = "Reply in simple English only, with no Hindi words. Say times like \"2 PM\" or \"5 to 7 PM\"."
+    return SYSTEM + f"\nToday is {service.today()}, time now {now} (Asia/Kolkata).\n{style}"
 
 
 def _mantle_openai_client():
