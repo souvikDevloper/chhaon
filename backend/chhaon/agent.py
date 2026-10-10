@@ -39,7 +39,7 @@ Rules:
 - A question about a specific time or task ("कल दोपहर 2 बजे ढलाई?") needs check_task with a 24-hour start_hour (सुबह 7 बजे = 7, दोपहर 2 बजे = 14, शाम 5 बजे = 17). If no duration is given, use 2 hours. If the question is about new workers (नए मज़दूर, first week), set new_workers=true. General questions about the day need day_plan.
 - Workload: leave it out to use the site's crew workload. Set it only when the task is clearly different: light = supervising, measuring, driving; moderate = plastering, painting, tying rebar; heavy = carrying bricks or cement, concreting (ढलाई), digging, shovelling.
 - Reading check_task: asked.ok is the answer (true only if every hour allows at least 45 work minutes). min_safe_minutes is how many minutes of each hour may be worked; the rest is rest in shade. best lists safer windows; prefer ones with ok=true.
-- Reading day_plan: safe_work_min_per_hour is the limit; planned_work_min is what the plan schedules. Do not mix them up.
+- Reading day_plan: stop_windows are [from, to] periods when this work must not be done ("When does heavy work stop?" = those periods, e.g. "from 9 AM to 12 PM"). safe_work_min_per_hour is the limit; planned_work_min is what the plan schedules. Do not mix them up.
 - Be short: at most 3 short sentences (about 50 words), plain text, no markdown. Lead with the decision (yes / no / which time), then the reason with the WBGT number, then one practical tip.
 - WBGT is the heat-stress measure (sun, humidity, wind, air temperature). Explain it in plain words if needed: in Hindi "धूप + उमस का असर", in English "sun + humidity".
 - If anyone is confused, unconscious, having a seizure or has hot dry skin, tell them to call 108 immediately and start cooling. Use the first_aid tool.
@@ -100,8 +100,8 @@ def make_tools(site: dict, lang: str) -> dict:
             "verdict": p.verdict,
             "work_starts": c.first_start,
             "work_ends": c.last_end,
-            "stop_windows": c.stop_windows,
-            "stop_windows_said": [f"{announce.spoken_time(a, lang)} – {announce.spoken_time(b, lang)}" for a, b in c.stop_windows],
+            "stop_windows": c.stop_windows,  # [from, to]: this work must not be done in these windows
+            "no_work_between_said": [f"{announce.spoken_time(a, lang)} – {announce.spoken_time(b, lang)}" for a, b in c.stop_windows],
             "peak_wbgt": p.peak_wbgt,
             "peak_time": p.peak_time,
             "unsafe_hours_in_normal_9_to_6_shift": p.unsafe_hours_normal,
@@ -291,7 +291,7 @@ def _system(lang: str) -> str:
     now = datetime.now(service.IST).strftime("%H:%M")
     if lang == "hi":
         style = ("Reply in simple Hindi (Devanagari). Say times the way people speak: \"दोपहर 2 बजे\", "
-                 "\"शाम 5 से 7 बजे तक\", not \"14:00\" or \"17-19 बजे\". Use the *_said fields from tools when they exist.")
+                 "\"शाम 5 से 7 बजे तक\", not \"14:00\" or \"17-19 बजे\". Use the *_said fields from tools for times when they exist.")
     else:
         style = "Reply in simple English only, with no Hindi words. Say times like \"2 PM\" or \"5 to 7 PM\"."
     return SYSTEM + f"\nToday is {service.today()}, time now {now} (Asia/Kolkata).\n{style}"
