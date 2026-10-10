@@ -8,7 +8,7 @@ For Environmental Hacks I wanted to know one thing: was 11 to 3 the right window
 
 ## Temperature is the wrong number
 
-Heat illness doesn't track air temperature. It tracks **WBGT**, the wet bulb globe temperature, which combines air temperature, humidity, sunshine and wind. Occupational-safety limits are written in WBGT: the ACGIH table says, for example, that an acclimatised worker doing heavy work (digging, carrying sacks, a concrete pour) should work no more than 15 minutes an hour once WBGT passes 29°C, and the table gives no safe share of work at all above 30.5°C.
+Heat illness doesn't track air temperature. It tracks **WBGT**, the wet bulb globe temperature, which combines air temperature, humidity, sunshine and wind. Occupational-safety limits are written in WBGT: the ACGIH table says, for example, that an acclimatised worker doing heavy work (digging, carrying sacks, a concrete pour) should work no more than 15 minutes an hour once WBGT passes 29°C. Above 30.5°C the table gives no screening value at all: ACGIH says that needs detailed analysis or physiological monitoring, so Chhaon simply stops that work.
 
 No weather station measures WBGT; it needs a black globe and a wet wick in the sun. But Liljegren and colleagues at Argonne published a model in 2008 that computes it from an ordinary forecast: temperature, humidity, wind, solar radiation, pressure and the sun's angle. I ported it to Python, then checked the wet-bulb part against Open-Meteo's own wet-bulb output for 96 hours of Howrah forecast: mean difference −0.05°C, worst 0.46°C.
 

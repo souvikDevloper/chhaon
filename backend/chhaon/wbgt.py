@@ -211,8 +211,10 @@ def outdoor_wbgt(
     wind_height_m: float = 10.0,
     urban: bool = True,
     shaded: bool = False,
+    tarp: bool = False,
 ) -> WbgtResult:
-    """WBGT for a worker outdoors. `shaded=True` models work under a roof (no direct or diffuse sun)."""
+    """WBGT for a worker outdoors. `shaded=True` models work under a roof (no direct or diffuse sun).
+    `tarp=True` models a tarpaulin over the work area: no direct beam, about half the diffuse light."""
     tk = t_air_c + 273.15
     rh = max(min(rh_pct, 100.0), 0.5) / 100.0
     solar = max(solar_wm2, 0.0)
@@ -235,6 +237,10 @@ def outdoor_wbgt(
     if wind_height_m != REF_HEIGHT:
         stab = stability_class(cza > 0, wind_ms, solar)
         speed = wind_at_2m(wind_ms, wind_height_m, stab, urban)
+
+    if tarp and solar > 0:  # the air is as before; only the radiation reaching the worker changes
+        solar = 0.5 * solar * (1.0 - fdir)
+        fdir = 0.0
 
     tg = globe_temperature(tk, rh, pressure_hpa, speed, solar, fdir, cza)
     tnwb = wet_bulb(tk, rh, pressure_hpa, speed, solar, fdir, cza, radiative=True)

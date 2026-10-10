@@ -39,13 +39,23 @@ def geocode(query: str) -> list[dict]:
         return []
 
 
+def _dedupe(items: list[dict]) -> list[dict]:
+    """The same hospital is often listed twice (e.g. "ESI Hospital" and "EMPLOYEES STATE INSURANCE
+    HOSPITAL" at one spot): keep the first of any two within about 150 m."""
+    out: list[dict] = []
+    for it in items:
+        if it["lat"] is None or not any(o["lat"] is not None and abs(o["lat"] - it["lat"]) < 0.0015 and abs(o["lon"] - it["lon"]) < 0.0015 for o in out):
+            out.append(it)
+    return out
+
+
 def nearest_hospitals(lat: float, lon: float, n: int = 3) -> list[dict]:
     try:
         res = client().search_nearby(
             QueryPosition=[lon, lat],
             QueryRadius=15000,
             Filter={"IncludeCategories": ["hospital"]},
-            MaxResults=n,
+            MaxResults=n * 2,
             AdditionalFeatures=["Contact"],
         )
         items = res.get("ResultItems", [])
@@ -53,10 +63,10 @@ def nearest_hospitals(lat: float, lon: float, n: int = 3) -> list[dict]:
         items = []
     if not items:
         try:
-            res = client().search_text(QueryText="hospital", BiasPosition=[lon, lat], MaxResults=n, AdditionalFeatures=["Contact"])
+            res = client().search_text(QueryText="hospital", BiasPosition=[lon, lat], MaxResults=n * 2, AdditionalFeatures=["Contact"])
             items = res.get("ResultItems", [])
         except (ClientError, BotoCoreError):
             return []
-    out = [_item(r) for r in items][:n]
+    out = [_item(r) for r in items]
     out.sort(key=lambda x: x["distance_m"] if x["distance_m"] is not None else 1e9)
-    return out
+    return _dedupe(out)[:n]

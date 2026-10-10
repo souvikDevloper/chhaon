@@ -37,10 +37,10 @@ def _fixture(name):
 
 
 def local_forecast(lat, lon, days=3):
-    fx = _fixture("forecast-howrah")
-    if fx:
-        return fx
     today = datetime.now(IST).date()
+    fx = _fixture("forecast-howrah")
+    if fx and f"{today + timedelta(days=2)}T00:00" in fx["hourly"]["time"]:  # the saved forecast still covers tomorrow
+        return fx
     h = synthetic_hourly(today.isoformat(), 34, 26, 55, 88, lat, lon)
     h2 = synthetic_hourly((today + timedelta(days=1)).isoformat(), 35, 26, 52, 88, lat, lon)
     for k in h:

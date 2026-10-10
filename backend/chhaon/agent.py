@@ -3,10 +3,16 @@
 The model writes the words. Every number and every safety decision comes from a
 tool that runs the same deterministic planner the rest of Chhaon uses.
 
-Engines, in order: Bedrock's OpenAI-compatible endpoint (bedrock-mantle,
-gpt-oss-120b by default) signed with the function's IAM role; then the Strands
-Agents SDK or the Converse API on bedrock-runtime (Nova 2 Lite). If no model
-answers in time, a rule-based answer is returned and labelled as such.
+Engines, in order, within one 18-second deadline:
+1. Strands Agents SDK driving the tool loop, with gpt-oss-120b on Bedrock's
+   OpenAI-compatible endpoint (bedrock-mantle), every request SigV4-signed with the
+   function's IAM role;
+2. the same model with a small hand-written tool loop (if the Strands layer is
+   missing or that engine errors quickly);
+3. Strands or the Converse API on bedrock-runtime (Nova 2 Lite), for accounts with
+   bedrock-runtime quota.
+If none answers in time, a rule-based answer from the same tools is returned and
+labelled as such. Every answer carries its tool trace and a facts line built by code.
 """
 from __future__ import annotations
 
@@ -82,7 +88,7 @@ def make_tools(site: dict, lang: str) -> dict:
     """The agent's tools. `_state` records every call (name and arguments) and the last
     first-aid guidance, so the answer can show its evidence and the fixed protocol text."""
     cache: dict[str, tuple] = {}
-    state: dict = {"trace": [], "first_aid": None}
+    state: dict = {"trace": [], "first_aid": None, "day_plan": None, "check_task": None}
 
     def _plan(day: str):
         date = service.resolve_day(day)
@@ -93,6 +99,11 @@ def make_tools(site: dict, lang: str) -> dict:
     def day_plan(day: str = "today") -> dict:
         state["trace"].append({"tool": "day_plan", "args": {"day": day}})
         date, (slots, p) = _plan(day)
+        out = _day_plan(date, p)
+        state["day_plan"], state["check_task"] = out, None
+        return out
+
+    def _day_plan(date, p) -> dict:
         c = p.crew
         return {
             "date": date,
@@ -109,7 +120,8 @@ def make_tools(site: dict, lang: str) -> dict:
             "work_minutes_planned": c.planned_minutes,
             "work_minutes_target": c.target_minutes,
             "hours": [
-                {"time": h.start, "wbgt": h.wbgt, "air_temp": h.air_temp, "safe_work_min_per_hour": h.safe_minutes, "planned_work_min": h.work_minutes}
+                {"time": h.start, "wbgt": h.wbgt, "air_temp": h.air_temp, "safe_work_min_per_hour": h.safe_minutes,
+                 "planned_work_min": h.work_minutes, "planned_rest_min": 60 - h.work_minutes if h.work_minutes else None, "status": h.status}
                 for h in c.hours
                 if h.status != "off"
             ],
@@ -132,6 +144,7 @@ def make_tools(site: dict, lang: str) -> dict:
         for w in [res.get("asked")] + list(res.get("best") or []):
             if w:
                 w["said"] = f"{announce.spoken_time(w['start'], lang)} – {announce.spoken_time(w['end'], lang)}"
+        state["check_task"], state["day_plan"] = res, None
         return res
 
     def first_aid(symptoms: list[str]) -> dict:
@@ -426,8 +439,10 @@ def _rule_based(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
     stops = ", ".join(f"{s}–{e}" for s, e in p["stop_windows"]) or ("कोई नहीं" if lang == "hi" else "none")
     when = ("कल" if day == "tomorrow" else "आज") if lang == "hi" else ("Tomorrow" if day == "tomorrow" else "Today")
     if lang == "hi":
-        return f"{when} काम {p['work_starts']} से शुरू। भारी काम बंद: {stops}। सबसे ज़्यादा गर्मी {p['peak_time']} पर (WBGT {p['peak_wbgt']}°C)।", ["day_plan"]
-    return f"{when}: work starts {p['work_starts']}. Heavy work stops: {stops}. Peak heat at {p['peak_time']} (WBGT {p['peak_wbgt']}°C).", ["day_plan"]
+        work = {"light": "हल्का काम", "moderate": "मध्यम काम", "heavy": "भारी काम", "very_heavy": "बहुत भारी काम"}.get(p.get("workload"), "काम")
+        return f"{when} काम {p['work_starts']} से शुरू। {work} बंद: {stops}। सबसे ज़्यादा गर्मी {p['peak_time']} पर (WBGT {p['peak_wbgt']}°C)।", ["day_plan"]
+    work = {"light": "Light work", "moderate": "Moderate work", "heavy": "Heavy work", "very_heavy": "Very heavy work"}.get(p.get("workload"), "Work")
+    return f"{when}: work starts {p['work_starts']}. {work} stops: {stops}. Peak heat at {p['peak_time']} (WBGT {p['peak_wbgt']}°C).", ["day_plan"]
 
 
 def ask(site: dict, question: str, lang: str | None = None) -> dict:
@@ -455,8 +470,7 @@ def ask(site: dict, question: str, lang: str | None = None) -> dict:
         if remaining < 2:
             errors.append(f"{engine}:no-time")
             break
-        tools["_state"]["trace"].clear()
-        tools["_state"]["first_aid"] = None
+        tools["_state"].update(trace=[], first_aid=None, day_plan=None, check_task=None)
         future = _pool.submit(run, question, tools, lang)
         try:
             text, used = future.result(timeout=remaining)
@@ -475,7 +489,7 @@ def ask(site: dict, question: str, lang: str | None = None) -> dict:
                 _blocked_until[backend] = time.time() + COOLDOWN_S
             elif backend in ("mantle", "strands-mantle"):
                 _blocked_until[backend] = time.time() + 60
-    tools["_state"]["trace"].clear()
+    tools["_state"].update(trace=[], first_aid=None, day_plan=None, check_task=None)
     text, used = _rule_based(question, tools, lang)
     return _result({
         "answer": text,
@@ -487,11 +501,44 @@ def ask(site: dict, question: str, lang: str | None = None) -> dict:
     }, tools)
 
 
+def _facts(state: dict, lang: str) -> str | None:
+    """One line built by code (not the model) from the last tool result, shown under the answer."""
+    hi = lang == "hi"
+    ck, dp = state.get("check_task"), state.get("day_plan")
+    if ck and ck.get("asked"):
+        a = ck["asked"]
+        when = a.get("said", a["start"])
+        if a["min_safe_minutes"] == 0:
+            line = f"प्लान से: {when} — यह काम बंद रहना चाहिए।" if hi else f"From the plan: {when}: this work should not be done."
+        else:
+            line = (f"प्लान से: {when} — हर घंटे सिर्फ़ {a['min_safe_minutes']} मिनट काम, बाकी छाँव में आराम।" if hi
+                    else f"From the plan: {when} allows {a['min_safe_minutes']} min of work an hour, the rest in shade.")
+        good = next((b for b in ck.get("best") or [] if b.get("ok")), None)
+        if good and not a.get("ok"):
+            line += (f" बेहतर: {good['said']} ({good['min_safe_minutes']} मिनट/घंटा)।" if hi else f" Better: {good['said']} ({good['min_safe_minutes']} min/hour).")
+        return line
+    if dp:
+        stops = ", ".join(dp.get("no_work_between_said") or [])
+        start, end = dp.get("work_starts"), dp.get("work_ends")
+        if not start:
+            return "प्लान से: आज इस काम के लिए कोई सुरक्षित समय नहीं।" if hi else "From the plan: no heat-safe time for this work today."
+        say = lambda t: announce.spoken_time(t, lang)  # noqa: E731
+        if hi:
+            return f"प्लान से: काम {say(start)} से {say(end)} तक" + (f"; बंद: {stops}।" if stops else "।")
+        return f"From the plan: work {say(start)} to {say(end)}" + (f"; stopped {stops}." if stops else ".")
+    return None
+
+
 def _result(res: dict, tools: dict) -> dict:
-    """Attach the tool trace, and the fixed first-aid protocol whenever first aid was asked:
-    the model may paraphrase, but the steps shown and spoken are the national guideline's own."""
+    """Attach the tool trace, a facts line computed by code, and the fixed first-aid protocol
+    whenever first aid was asked: the model may paraphrase, but what is shown and spoken as
+    first aid is the national guideline's own text."""
     state = tools["_state"]
     res["trace"] = state["trace"][-6:]
+    res["answer"] = (res.get("answer") or "").replace("\u2011", "-").replace("\u2010", "-")
+    facts = _facts(state, res.get("lang", "hi"))
+    if facts:
+        res["facts"] = facts
     if state["first_aid"]:
         res["protocol"] = state["first_aid"]
     return res

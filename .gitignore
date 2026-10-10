@@ -1,14 +1,6 @@
 build/
-scripts/queue/
-scripts/logs/
-scripts/commit-message.txt
 __pycache__/
 *.pyc
 .venv/
 .DS_Store
-scripts/queue-hold/
-scripts/jobs/cleanup-career-agent.ps1
-scripts/jobs/inventory.ps1
-scripts/jobs/fix-attribution.ps1
-scripts/jobs/amend-message.ps1
-scripts/jobs/layer-probe.ps1
+.aws-sam/

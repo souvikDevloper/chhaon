@@ -32,6 +32,7 @@ for (const lang of ["hi", "en"]) {
   await page.screenshot({ path: `${out}/plan-${lang}.png` });
   await page.goto(base + "/#/replay/aurangabad-2024-05-30");
   await page.waitForSelector(".quote", { timeout: 10000 });
+  await page.addStyleTag({ content: ".tabs{position:static!important}" }); // a full-page shot would draw the fixed tab bar mid-page
   await page.screenshot({ path: `${out}/replay-${lang}.png`, fullPage: true });
   if (lang === "hi") {
     await page.goto(base + "/#/unwell");

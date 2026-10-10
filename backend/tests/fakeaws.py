@@ -111,9 +111,16 @@ class FakeClient:
     def send_task_success(self, taskToken, output):
         self.world.task_success.append({"token": taskToken, "output": output})
 
+    def stop_execution(self, executionArn, cause=""):
+        self.world.stopped = getattr(self.world, "stopped", []) + [executionArn]
+
     # geo-places
     def search_nearby(self, **kw):
-        return {"ResultItems": [{"Title": "District Hospital", "Address": {"Label": "Main Rd"}, "Position": [88.27, 22.59], "Distance": 1800}]}
+        return {"ResultItems": [
+            {"Title": "District Hospital", "Address": {"Label": "Main Rd"}, "Position": [88.27, 22.59], "Distance": 1800},
+            {"Title": "DISTRICT HOSPITAL", "Address": {"Label": "Main Road"}, "Position": [88.2703, 22.5901], "Distance": 1810},
+            {"Title": "ESI Hospital", "Address": {"Label": "Bankra"}, "Position": [88.29, 22.61], "Distance": 3000},
+        ]}
 
     def search_text(self, **kw):
         return {"ResultItems": []}

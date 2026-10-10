@@ -15,7 +15,7 @@ _sfn = None
 
 SITE_FIELDS = (
     "name", "lat", "lon", "workload", "crew", "new_workers", "new_worker_day", "shaded",
-    "lang", "window_start", "window_end", "clothing",
+    "lang", "window_start", "window_end", "clothing", "day_wage",
 )
 
 
@@ -35,9 +35,11 @@ def _clean_site(data: dict, base: dict | None = None) -> dict:
     site["lang"] = "en" if site.get("lang") == "en" else "hi"
     try:
         site["lat"], site["lon"] = float(site["lat"]), float(site["lon"])
-        for k in ("crew", "new_workers", "new_worker_day", "window_start", "window_end"):
+        for k in ("crew", "new_workers", "new_worker_day", "window_start", "window_end", "day_wage"):
             if k in site:
                 site[k] = int(site[k])
+        if "day_wage" in site:
+            site["day_wage"] = max(100, min(site["day_wage"], 5000))
         site["shaded"] = bool(site.get("shaded", False))
         planner.SiteConfig.from_dict(site)
         if "new_worker_day" in data or "new_workers" in data:
@@ -115,11 +117,15 @@ def route(event: dict) -> dict:
         if sub == "/speak" and method == "POST":
             _limit(event, "speak", 12)
             data = body(event)
-            text = str(data.get("text") or "").strip()[:600]
+            text = str(data.get("text") or "").strip()[:1500]
             if not text:
                 raise HttpError(400, "nothing to speak")
             lang = "en" if data.get("lang") == "en" else "hi"
-            return respond(200, {"audio": voice.speak(text, lang)})
+            from handlers.ask import speakable_key
+
+            if not store.get_marker(speakable_key(text, lang)):
+                raise HttpError(403, "only Chhaon's own answers can be spoken")
+            return respond(200, {"audio": voice.speak(text, lang, prefix="audio/say", cache="public, max-age=86400")})
         if sub == "/brief" and method == "POST":
             _limit(event, "brief", 10)
             data = body(event)
@@ -136,11 +142,14 @@ def route(event: dict) -> dict:
             return respond(201, _start_incident(site_id, site, body(event)))
         raise HttpError(404, "not found")
 
-    m = re.fullmatch(r"/api/incidents/([^/]+)(/answer)?", path)
+    m = re.fullmatch(r"/api/incidents/([^/]+)(/answer|/escalate)?", path)
     if m:
         inc_id = valid_id(m.group(1))
-        if m.group(2) and method == "POST":
+        if m.group(2) == "/answer" and method == "POST":
             return respond(200, _answer(inc_id, body(event)))
+        if m.group(2) == "/escalate" and method == "POST":
+            _limit(event, "escalate", 10)
+            return respond(200, _escalate(inc_id))
         inc = store.get_incident(inc_id)
         if not inc:
             raise HttpError(404, "incident not found")
@@ -178,6 +187,15 @@ def _start_incident(site_id: str, site: dict, data: dict) -> dict:
     symptoms = [s for s in (data.get("symptoms") or []) if s in protocol.ALL_SYMPTOMS][:10]
     if not symptoms:
         raise HttpError(400, "pick at least one symptom")
+    # the phone sends a report id; a retry after a timeout (or from the offline queue) gets the same incident
+    client_id = re.sub(r"[^A-Za-z0-9-]", "", str(data.get("client_id") or ""))[:40]
+    if client_id:
+        known = store.get_marker(f"report#{client_id}")
+        if known:
+            inc = store.get_incident(known)
+            if inc:
+                inc.get("pending") and inc["pending"].pop("token", None)
+                return inc
     lang = "en" if (data.get("lang") or site.get("lang")) == "en" else "hi"
     level = protocol.classify(symptoms)
     worker = str(data.get("worker") or ("साथी" if lang == "hi" else "Worker"))[:40]
@@ -193,12 +211,15 @@ def _start_incident(site_id: str, site: dict, data: dict) -> dict:
         "lang": lang,
         "demo": demo,
         "guidance": protocol.guidance(level, lang),
+        "site": {"name": site.get("name"), "lat": site.get("lat"), "lon": site.get("lon")},
         "hospitals": [],
         "pending": None,
         "timeline": [{"t": store.now_iso(), "kind": "reported", "text": ", ".join(symptoms)}],
         "created": store.now_iso(),
     }
     store.put_incident(inc_id, inc)
+    if client_id:
+        store.set_marker(f"report#{client_id}", inc_id)
     execution = sfn().start_execution(
         stateMachineArn=os.environ["PROTOCOL_ARN"],
         name=inc_id,
@@ -214,6 +235,39 @@ def _start_incident(site_id: str, site: dict, data: dict) -> dict:
 
 
 ANSWERS = {"recheck": ("better", "same", "worse"), "handover": ("handed_over",)}
+
+
+def _escalate(inc_id: str) -> dict:
+    """The supervisor says it's getting worse, before the re-check: go to the emergency path now."""
+    inc = store.get_incident(inc_id)
+    if not inc:
+        raise HttpError(404, "incident not found")
+    if inc.get("status") in ("emergency", "handed_over") or inc.get("level") == "red":
+        return {"ok": True, "status": inc.get("status")}
+    pending = inc.get("pending") or {}
+    if pending.get("question") == "recheck" and pending.get("token"):
+        return _answer(inc_id, {"answer": "worse"})
+    old = inc.get("execution_arn")
+    if old:
+        try:
+            sfn().stop_execution(executionArn=old, cause="supervisor escalated")
+        except Exception:
+            pass
+    execution = sfn().start_execution(
+        stateMachineArn=os.environ["PROTOCOL_ARN"],
+        name=f"{inc_id}-worse",
+        input=json.dumps({"incident_id": inc_id, "site_id": inc["site_id"], "level": "red", "lang": inc.get("lang", "hi"),
+                          "wait_seconds": 20 if inc.get("demo") else 1800, "handover_timeout": 300 if inc.get("demo") else 3600}),
+    )
+
+    def apply(i):
+        i["execution_arn"] = execution["executionArn"]
+        i["pending"] = None
+        i["timeline"].append({"t": store.now_iso(), "kind": "answer", "text": "worse"})
+        return i
+
+    inc = store.update_incident(inc_id, apply)
+    return {"ok": True, "status": inc.get("status")}
 
 
 def _answer(inc_id: str, data: dict) -> dict:

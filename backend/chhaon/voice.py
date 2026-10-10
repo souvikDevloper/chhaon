@@ -23,13 +23,14 @@ def _clients():
     return _polly, _s3
 
 
-def speak(text: str, lang: str) -> str:
-    """Return the site-relative URL of an MP3 for `text`."""
+def speak(text: str, lang: str, prefix: str = "audio", cache: str = "public, max-age=31536000, immutable") -> str:
+    """Return the site-relative URL of an MP3 for `text`. Fixed announcements live under audio/
+    (kept 90 days); one-off speech (answers, voice notes) under audio/say/ (kept 2 days)."""
     polly, s3 = _clients()
     bucket = os.environ["WEB_BUCKET"]
     code = "hi-IN" if lang == "hi" else "en-IN"
     digest = hashlib.sha256(f"{code}|{text}".encode()).hexdigest()[:32]
-    key = f"audio/{digest}.mp3"
+    key = f"{prefix}/{digest}.mp3"
     try:
         s3.head_object(Bucket=bucket, Key=key)
         return "/" + key
@@ -48,6 +49,6 @@ def speak(text: str, lang: str) -> str:
         Key=key,
         Body=audio["AudioStream"].read(),
         ContentType="audio/mpeg",
-        CacheControl="public, max-age=31536000, immutable",
+        CacheControl=cache,
     )
     return "/" + key

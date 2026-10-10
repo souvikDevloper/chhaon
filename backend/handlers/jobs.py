@@ -21,6 +21,7 @@ def morning(event, context):
         if not site or not site.get("auto_publish"):
             continue
         try:
+            store.refresh_site(site_id)  # a site in use never silently expires
             res = service.publish(site_id, site, date)
             avoided += res["unsafe_hours_avoided"]
             done += 1

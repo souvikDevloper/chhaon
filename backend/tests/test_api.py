@@ -56,6 +56,10 @@ class ApiFlow(unittest.TestCase):
         self.assertEqual(code, 200, plan)
         self.assertIn(plan["plan"]["verdict"], ("normal", "adjusted", "stop_heavy", "stop_all"))
         self.assertTrue(plan["plan"]["crew"]["hours"])
+        if plan["plan"]["crew"]["stop_windows"]:  # stopped heavy work: lighter work still pays
+            self.assertIn(plan["lighter"]["workload"], ("moderate", "light"))
+            self.assertGreater(plan["lighter"]["rupees"], 0)
+        self.assertEqual(plan["day_wage"], 600)
 
         code, pub = call("POST", f"/api/sites/{sid}/publish", {"day": "tomorrow"})
         self.assertEqual(code, 200, pub)
@@ -147,6 +151,35 @@ class ApiFlow(unittest.TestCase):
         code, again = call("POST", f"/api/incidents/{inc['id']}/answer", {"answer": "better"})
         self.assertEqual(code, 409)
 
+    def test_escalate_during_the_wait_and_idempotent_reports(self):
+        _, demo = call("POST", "/api/demo", ip="5.5.5.6")
+        sid = demo["site_id"]
+        body = {"worker": "Asha", "symptoms": ["dizzy"], "client_id": "r-123"}
+        code, inc = call("POST", f"/api/sites/{sid}/incidents", body, ip="5.5.5.6")
+        self.assertEqual(code, 201)
+        n = len(WORLD.executions)
+        code, again = call("POST", f"/api/sites/{sid}/incidents", body, ip="5.5.5.6")  # retried after a timeout
+        self.assertEqual(again["id"], inc["id"])
+        self.assertEqual(len(WORLD.executions), n)  # no second workflow, no second email
+        code, res = call("POST", f"/api/incidents/{inc['id']}/escalate", {}, ip="5.5.5.6")
+        self.assertEqual(code, 200, res)
+        self.assertIn(inc["execution_arn"], WORLD.stopped)
+        restart = json.loads(WORLD.executions[-1]["input"])
+        self.assertEqual(restart["level"], "red")
+        self.assertEqual(restart["incident_id"], inc["id"])
+        state = protocol_task.handler({"action": "emergency", "state": restart}, None)
+        _, seen = call("GET", f"/api/incidents/{inc['id']}")
+        self.assertEqual(len(seen["hospitals"]), 2)  # the duplicate listing is merged
+        self.assertTrue(any(x["kind"] == "notified" for x in seen["timeline"]))
+
+    def test_heat_rash_ends_without_a_recheck(self):
+        _, demo = call("POST", "/api/demo", ip="5.5.5.7")
+        code, inc = call("POST", f"/api/sites/{demo['site_id']}/incidents", {"symptoms": ["rash"]}, ip="5.5.5.7")
+        start = json.loads(WORLD.executions[-1]["input"])
+        protocol_task.handler({"action": "care", "state": start}, None)
+        _, seen = call("GET", f"/api/incidents/{inc['id']}")
+        self.assertEqual(seen["status"], "resolved")
+
     def test_red_flag_is_immediate(self):
         _, demo = call("POST", "/api/demo", ip="6.6.6.6")
         code, inc = call("POST", f"/api/sites/{demo['site_id']}/incidents", {"symptoms": ["confused"], "lang": "en"}, ip="6.6.6.6")
@@ -176,6 +209,18 @@ class ApiFlow(unittest.TestCase):
         self.assertIn("converse:ClientError", res["error"])  # really tried Bedrock, then fell back
         self.assertEqual(res["lang"], "hi")
         self.assertIn("WBGT", res["answer"])
+
+    def test_only_chhaons_own_answers_can_be_spoken(self):
+        _, demo = call("POST", "/api/demo", ip="8.8.4.4")
+        sid = demo["site_id"]
+        code, _ = call("POST", f"/api/sites/{sid}/speak", {"text": "anything at all", "lang": "hi"}, ip="8.8.4.4")
+        self.assertEqual(code, 403)
+        _, res = call("POST", "/api/ask", {"site_id": sid, "question": "एक साथी को चक्कर और उल्टी हो रही है, क्या करें?"}, ip="8.8.4.4", fn=ask.handler)
+        code, spoken = call("POST", f"/api/sites/{sid}/speak", {"text": res["answer"], "lang": res["lang"]}, ip="8.8.4.4")
+        self.assertEqual(code, 200, spoken)
+        p = res["protocol"]
+        code, _ = call("POST", f"/api/sites/{sid}/speak", {"text": " ".join([p["title"], *p["steps"]]), "lang": res["lang"]}, ip="8.8.4.4")
+        self.assertEqual(code, 200)
 
     def test_agent_tools_direct(self):
         tools = agent.make_tools(service.DEMO_SITE, "en")
@@ -238,6 +283,7 @@ class MantleAgent(unittest.TestCase):
         self.assertEqual(res["tools_used"], ["check_task"])
         self.assertIn("17:00", res["answer"])
         self.assertEqual(res["trace"], [{"tool": "check_task", "args": {"day": "tomorrow", "start_hour": 14, "hours": 2}}])
+        self.assertTrue(res["facts"].startswith("प्लान से"))  # a line computed by code, not the model
         tool_msg = seen[1]["messages"][-1]
         self.assertEqual(tool_msg["role"], "tool")
         self.assertIn("best", json.loads(tool_msg["content"]))  # the real planner output went back to the model

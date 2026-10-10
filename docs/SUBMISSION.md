@@ -17,10 +17,10 @@ Two things make the supervisor's decision go wrong:
 Chhaon (छाँव, "shade") is a Hindi-first web app for site supervisors and their crews, running on AWS.
 
 1. **A heat-safe shift plan, hour by hour.** Modelled WBGT for every hour from the site's forecast (Liljegren model), the safe share of each hour for the crew's workload (ACGIH screening limits), and a shift that keeps the normal 9-to-6 hours where they are safe and moves the unsafe minutes into the coolest hours. It shows how many normal-shift hours the heat made unsafe (none are left in the plan), how much paid work is kept, the worker-hours kept out of unsafe heat, and water for the crew. New workers get the stricter limits and NIOSH's acclimatisation ramp, and their day on site counts up by itself.
-2. **Keep the pay.** A shade option re-plans the same day as if a tarpaulin covered the work area, so the supervisor sees what shade is worth in paid work (in Howrah on 8 Oct: the full shift instead of a five-hour pause).
-3. **Breaks called on time, in Hindi.** Each rest, stop and restart is an EventBridge Scheduler timer; when it fires, Amazon Polly speaks it and the phone plays it through a site speaker, on any screen. The day's audio is cached on the phone, so breaks are still called if the network drops. Each playback is reported, so "played on site" is measured, not assumed.
+2. **Keep the pay.** When heavy work has to stop, the plan shows how much lighter work (measuring, shuttering and rebar prep) is still safe in those hours, and what it is worth in wages. A shade option re-plans the day as if a tarpaulin covered the work area, as an "up to" estimate in rupees (in Howrah on 8 Oct: up to the full shift instead of a five-hour pause). Work is planned in daylight only, lunch stays free, and nobody is called in for a lone 15 minutes.
+3. **Breaks called on time, in Hindi.** Each rest, stop and restart is an EventBridge Scheduler timer; when it fires, Amazon Polly speaks it and the phone plays it through a site speaker (a chime, then the message twice) while Chhaon is open on the phone. The day's audio is cached on the phone, so breaks are still called if the network drops. Each playback is reported, so "played on site" is measured, not assumed.
 4. **A voice note for workers.** One tap shares the day's plan as a Hindi voice note to the crew's WhatsApp group, so workers who don't read hear the start time, the stop, water and the warning signs.
-5. **A heat-illness protocol.** A 108 button first. The supervisor taps symptoms; triage and first aid follow India's National Action Plan on Heat Related Illnesses (NCDC), shown instantly even offline. A Step Functions workflow waits, asks for a re-check and escalates anything not clearly better: call 108, nearest hospitals (Amazon Location), email to the safety officer.
+5. **A heat-illness protocol.** A 108 button first. The supervisor taps symptoms; triage and first aid follow India's National Action Plan on Heat Related Illnesses (NCDC), shown instantly even offline. A Step Functions workflow waits, asks for a re-check (a banner, chime and vibration on any screen) and escalates anything not clearly better; "Getting worse" can be tapped at any time. Emergency: call 108 with the site location to read out, nearest hospitals (Amazon Location), email to the safety officer.
 6. **Ask in Hindi or English, by voice.** The supervisor taps the mic and asks in Hindi; Amazon Transcribe streams the speech to text, a Strands Agents agent on Amazon Bedrock (gpt-oss-120b, Mumbai region) answers ("Can we pour concrete at 2 tomorrow?") by calling the planner as a tool and shows its tool calls under the answer, and Polly reads it back. The model explains; deterministic code makes every safety call.
 7. **Replay a real day.** The planner run on the actual weather of 30 May 2024.
 
@@ -38,13 +38,13 @@ Built for where the user is: Hindi first with times as people say them ("दो�
 - **Amazon DynamoDB**: one table for sites, plans, feed and incidents; TTL on health data; once-per-day markers so impact is never double-counted.
 - **Amazon CloudFront + S3, API Gateway**: delivery from Indian edge locations; throttled HTTP API.
 - **Amazon SNS + CloudWatch**: safety-officer alerts, alarms, and an impact dashboard (worker-hours kept out of unsafe heat, real sites and demo sites separate; announcements sent and played).
-- **AWS SAM / CloudFormation**: the whole stack in one template, least-privilege IAM per function, region ap-south-1 (Mumbai). A few US cents per site per month at list prices.
+- **AWS SAM** (template and SAM CLI): the whole stack in one template, linted with `sam validate --lint` and deployed with `sam deploy`, least-privilege IAM per function, region ap-south-1 (Mumbai). Under a dollar per site per month at list prices, most of it Polly for the daily voice note.
 
 Deliberately not used: SMS (needs TRAI DLT registration), SageMaker (nothing to train), always-on servers.
 
 ## Honest limits
 
-Area forecasts are not site measurements, and only the wet-bulb part of the WBGT model is validated against an independent source; the ACGIH table is a screening tool; Chhaon is not a medical device. Replays use ERA5 reanalysis (about 25 km). The shade option is an estimate. Polly speaks Hindi and Indian English only. Demo sites compress the 30-minute re-check to 20 seconds. Not yet tested with a supervisor on a working site.
+Area forecasts are not site measurements; the WBGT code matches Liljegren's own C implementation to within 0.01°C but has not been checked against a WBGT meter on site; the ACGIH table is a screening tool; weather is from Open-Meteo's free, non-commercial API; Chhaon is not a medical device. Replays use ERA5 reanalysis (about 25 km). The shade option is an estimate. Polly speaks Hindi and Indian English only. Demo sites compress the 30-minute re-check to 20 seconds. Not yet tested with a supervisor on a working site.
 
 ## AI tools used
 

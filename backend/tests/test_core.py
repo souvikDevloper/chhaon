@@ -55,6 +55,29 @@ class WbgtTests(unittest.TestCase):
         self.assertLess(windy.wbgt, calm.wbgt)
 
 
+class LiljegrenReferenceTests(unittest.TestCase):
+    """Against Liljegren's own C implementation (wbgt.c from Argonne, as packaged in the MIT-licensed
+    R package mdljts/wbgt), compiled and run on the same inputs: wind already at 2 m, direct fraction given."""
+
+    # (air C, RH %, hPa, wind m/s at 2 m, solar W/m2, direct fraction, cos zenith) -> (globe, natural wet bulb, psychrometric wet bulb, WBGT)
+    CASES = [
+        ((35.0, 55, 1005, 1.5, 850, 0.75, 0.90), (51.555, 29.211, 26.978, 34.259)),
+        ((30.0, 80, 1008, 0.7, 600, 0.60, 0.55), (49.075, 30.142, 27.029, 33.914)),
+        ((42.0, 20, 990, 3.0, 950, 0.80, 0.95), (55.066, 24.621, 22.657, 32.448)),
+        ((28.0, 90, 1010, 2.0, 200, 0.20, 0.30), (32.907, 27.359, 26.618, 28.533)),
+        ((39.3, 50, 995, 0.7, 700, 0.70, 0.70), (58.770, 32.553, 29.468, 38.471)),
+        ((33.0, 65, 1000, 4.0, 0, 0.00, 0.10), (32.645, 27.261, 27.202, 28.912)),
+    ]
+
+    def test_matches_reference_c_code(self):
+        for (t, rh, p, wind, sol, fdir, cza), (tg, tnwb, tpsy, wbgt) in self.CASES:
+            r = outdoor_wbgt(t, rh, wind, sol, p, cza, direct_wm2=fdir * sol, wind_height_m=2.0)
+            self.assertAlmostEqual(r.globe, tg, delta=0.01)
+            self.assertAlmostEqual(r.natural_wet_bulb, tnwb, delta=0.01)
+            self.assertAlmostEqual(r.psychrometric_wet_bulb, tpsy, delta=0.01)
+            self.assertAlmostEqual(r.wbgt, wbgt, delta=0.01)
+
+
 class SolarTests(unittest.TestCase):
     def test_noon_sun_high_in_kolkata_may(self):
         cza, dist = solar_position(datetime(2024, 5, 30, 11, 30, tzinfo=IST), 22.57, 88.36)
@@ -103,8 +126,31 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(p.crew.stop_windows)
         for h in p.crew.hours:
             self.assertLessEqual(h.work_minutes, h.safe_minutes)
-        self.assertEqual(p.crew.first_start, "06:00")
+        self.assertIn(p.crew.first_start, (None, "06:00"))  # a lone 15 minutes at dawn is not worth calling a crew in for
         self.assertIn(p.verdict, ("stop_heavy", "stop_all"))
+
+    def test_daylight_lunch_and_no_lone_call_ins(self):
+        hourly = synthetic_hourly("2024-10-10", 33, 25, 55, 90, 22.6, 88.26)
+        c = planner.SiteConfig(lat=22.6, lon=88.26, workload="heavy")
+        slots, p = planner.plan_from_weather(hourly, 19800, c, "2024-10-10")
+        dark = {s.hour for s in slots if not s.daylight}
+        self.assertIn(18, dark)  # Howrah in October: dark by 6 PM
+        worked = {h.hour: h.work_minutes for h in p.crew.hours if h.work_minutes}
+        self.assertFalse(set(worked) & dark)
+        self.assertNotIn(13, worked)  # lunch stays free
+        for h, m in worked.items():
+            if m < 30:
+                self.assertTrue(worked.get(h - 1) or worked.get(h + 1), f"lone {m}-minute call-in at {h}:00")
+        # lit sites may still use the evening
+        _, night = planner.plan_from_weather(hourly, 19800, planner.SiteConfig(lat=22.6, lon=88.26, workload="heavy", window_start=5, window_end=22), "2024-10-10")
+        self.assertGreaterEqual(night.crew.planned_minutes, p.crew.planned_minutes)
+
+    def test_tarp_is_between_sun_and_roof(self):
+        hourly = synthetic_hourly("2024-05-30", 38, 28, 40, 75, self.lat, self.lon)
+        noon = lambda **kw: next(s for s in planner.compute_slots(hourly, 19800, self.lat, self.lon, "2024-05-30", **kw) if s.hour == 11)  # noqa: E731
+        sun, tarp, roof = noon(), noon(tarp=True), noon(shaded=True)
+        self.assertLess(tarp.wbgt, sun.wbgt)
+        self.assertGreater(tarp.wbgt, roof.wbgt)
 
     def test_mild_day_keeps_normal_shift(self):
         hourly = synthetic_hourly("2024-05-30", 27, 20, 40, 60, self.lat, self.lon)

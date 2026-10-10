@@ -28,6 +28,9 @@ const S = {
   dayAudio: null, // today's announcements with their audio, cached for offline playback
   played: new Set(),
   listening: null, // an open Transcribe stream
+  expectTest: false,
+  incidentTimer: null,
+  attention: null, // an open case is waiting for the supervisor's answer
 };
 const t = () => STR[S.lang];
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -137,7 +140,10 @@ function play(url, key) {
 async function keepAwake() {
   try { if ("wakeLock" in navigator && !S.wakeLock) S.wakeLock = await navigator.wakeLock.request("screen"); } catch {}
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.speaker) { S.wakeLock = null; keepAwake(); } });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && S.speaker) { S.wakeLock = null; keepAwake(); if (S.wasHidden) toast(t().keepOpen, 6000); S.wasHidden = false; }
+  if (document.visibilityState === "hidden" && S.speaker) S.wasHidden = true;
+});
 
 // ---------------- icons ----------------
 const I = {
@@ -168,6 +174,7 @@ function shell() {
         <button class="chip-btn" data-action="lang" lang="${S.lang === "hi" ? "en" : "hi"}">${t().lang}</button>
       </header>
       ${S.offline ? `<div class="banner" role="status">${t().offline}</div>` : ""}
+      ${S.attention ? `<a class="attention" href="#/incident/${esc(S.attention.split("|")[0])}" role="alert">${t().recheckBanner}</a>` : ""}
       ${S.speaker && S.siteId ? `<a class="speakerbar" href="#/today" role="status">${esc(t().speakerBar(nextAnnouncement()))}</a>` : ""}
       <main id="main" tabindex="-1"></main>
       ${S.siteId ? `<nav class="tabs" aria-label="Main">
@@ -298,12 +305,17 @@ function viewToday() {
     return `<p class="note">${esc(t().newWorkers(site.new_workers, site.new_worker_day || 1, fmtMins(p.new_workers.planned_minutes), workRanges(p.new_workers.hours) || "–"))}</p>`;
   })() : "";
 
-  const impact = p.verdict === "normal" ? t().impactNormal : t().impact(p.unsafe_hours_avoided, fmtMins(p.crew.planned_minutes), fmtMins(p.crew.target_minutes), Math.round(p.worker_hours_protected));
-  const sh = P.shade;
+  const impact = p.verdict === "normal" ? t().impactNormal : t().impact(p.unsafe_hours_avoided, fmtMins(p.crew.planned_minutes), fmtMins(p.crew.target_minutes), Math.round(p.worker_hours_protected), p.normal_minutes_per_hour || 45);
+  const sh = P.shade, lt = P.lighter;
+  const lighterCard = lt ? `<section class="card shade-card">
+      <h3>${t().lighterTitle}</h3>
+      <p>${esc(t().lighter(t().workload[lt.workload], lt.stop_windows.map(([a, b]) => span(a, b)).join(", "), fmtMins(lt.minutes), lt.worker_hours, lt.rupees.toLocaleString("en-IN")))}</p>
+      <p class="small">${esc(t().workloadEg[lt.workload])}</p>
+    </section>` : "";
   const shadeCard = sh ? `<section class="card shade-card">
       <h3>${t().shadeTitle}</h3>
-      <p>${esc(t().shade(fmtMins(sh.gain_minutes), sh.gain_worker_hours, sh.stop_windows.map(([a, b]) => span(a, b)).join(", ")))}</p>
-      <p class="small">${t().shadeNote}</p>
+      <p>${esc(t().shade(fmtMins(sh.gain_minutes), sh.gain_worker_hours, sh.gain_rupees.toLocaleString("en-IN"), sh.stop_windows.map(([a, b]) => span(a, b)).join(", ")))}</p>
+      <p class="small">${t().shadeNote} ${esc(t().wageNote(P.day_wage || 600))}</p>
     </section>` : "";
   const feedItems = S.feed.slice(-6).reverse();
   return `
@@ -333,6 +345,7 @@ function viewToday() {
       <p class="small" style="margin:8px 0 10px">${t().briefHelp}</p>
       <a class="btn ghost block" href="${esc(shareUrl(P))}" target="_blank" rel="noopener">${t().share}</a>
     </section>
+    ${lighterCard}
     ${shadeCard}
     ${isToday ? `<section class="card">
       <h3>${t().speaker}</h3>
@@ -344,7 +357,7 @@ function viewToday() {
       </div>
       <ul class="feed">${feedItems.length ? feedItems.map(feedItem).join("") : `<li><span class="txt small">${t().feedEmpty}</span></li>`}</ul>
     </section>` : ""}
-    <a class="replay-card" href="#/replay/rourkela-2024-05-30">${t().replayCard}</a>`;
+    <a class="replay-card" href="#/replay/aurangabad-2024-05-30">${t().replayCard}</a>`;
 }
 
 function workRanges(hours) {
@@ -362,7 +375,7 @@ function workRanges(hours) {
 
 function shareUrl(P) {
   const p = P.plan;
-  const text = t().shareText(P.site.name, fmtDate(P.date), workRanges(p.crew.hours) || "–", p.crew.stop_windows.map(([a, b]) => span(a, b)).join(", "), `${say(p.peak_time)} (WBGT ${p.peak_wbgt}°C)`);
+  const text = t().shareText(P.site.name, fmtDate(P.date), workRanges(p.crew.hours) || "–", p.crew.stop_windows.map(([a, b]) => span(a, b)).join(", "), `${say(p.peak_time)} (WBGT ${p.peak_wbgt}°C)`, t().workload[p.workload]);
   return `https://wa.me/?text=${encodeURIComponent(text)}`;
 }
 
@@ -372,7 +385,7 @@ function feedItem(f) {
     return `<li><span class="when">${fmtTime(f.ts)}</span><span class="txt">${esc(f.text?.[S.lang] || "")}</span>${audio ? `<button class="icon-btn" data-action="play" data-src="${esc(audio)}" aria-label="${t().listen}">${I.play}</button>` : ""}</li>`;
   }
   if (f.type === "incident" || f.type === "alert") {
-    return `<li class="alert"><span class="when">${fmtTime(f.ts)}</span><a class="txt" href="#/incident/${esc(f.incident_id)}">${f.type === "alert" ? "108 · " : ""}${esc(f.worker || "")} ${esc(t().status[f.type === "alert" ? "emergency" : "open"])}</a></li>`;
+    return `<li class="alert"><span class="when">${fmtTime(f.ts)}</span><a class="txt" href="#/incident/${esc(f.incident_id)}">${f.type === "alert" ? t().feedAlert : t().feedReport(f.worker || "")}</a></li>`;
   }
   return "";
 }
@@ -402,15 +415,22 @@ function viewIncident() {
       <div class="answers">${q.options.map((o) => `<button class="btn ${o === "worse" ? "red" : o === "better" ? "" : "ghost"} block" data-action="answer" data-answer="${o}">${esc(t().answers[o])}</button>`).join("")}</div>
     </section>` : "";
   const emergency = lvl === "red";
+  const open = !["resolved", "handed_over"].includes(inc.status);
   const steps = `<h3 style="margin-top:20px">${t().steps}</h3>
     <ol class="steps">${g.steps.map((s) => `<li><span>${esc(s)}</span></li>`).join("")}</ol>`;
+  const site = inc.site || S.payload?.site;
+  const where = emergency && open && site?.lat != null ? `<div class="tell108"><b>${t().tell108}</b> ${esc(site.name || "")} · ${(+site.lat).toFixed(5)}, ${(+site.lon).toFixed(5)}
+      <a href="https://wa.me/?text=${encodeURIComponent(`${t().myLocation}: https://maps.google.com/?q=${site.lat},${site.lon}`)}" target="_blank" rel="noopener">${t().shareLocation}</a></div>` : "";
+  const worse = open && !emergency && !(q && q.question === "recheck") && !inc.local ? `<button class="btn red block" data-action="escalate">${t().gettingWorse}</button>` : "";
   return `
     <section class="level ${lvl}">
       <h2>${esc(g.title)}</h2>
       <div>${esc(inc.worker)}: ${inc.symptoms.map((s) => esc(t().symptoms[s] || s)).join(", ")}</div>
       ${inc.status !== "emergency" ? `<div><b>${esc(t().status[inc.status] || inc.status)}</b></div>` : ""}
-      ${g.call_108 ? `<a class="btn block" href="tel:108">📞 ${t().call108}</a>` : ""}
+      ${g.call_108 || (open && lvl !== "green") ? `<a class="btn block" href="tel:108">📞 ${t().call108}</a>` : ""}
     </section>
+    ${where}
+    ${worse}
     ${emergency ? steps + question : question + steps}
     ${inc.hospitals?.length ? `<h3 style="margin-top:20px">${t().hospitals}</h3><ul class="hosp">${inc.hospitals.map((h) => `<li><b>${esc(h.name)}</b><span class="small">${esc(h.address || "")}${h.distance_m ? ` · ${(h.distance_m / 1000).toFixed(1)} km` : ""}</span><div class="row">${h.phone ? `<a href="tel:${esc(h.phone)}">📞 ${esc(h.phone)}</a>` : ""}<a href="https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lon}" target="_blank" rel="noopener">${t().directions}</a></div></li>`).join("")}</ul>` : ""}
     <h3 style="margin-top:20px">${t().timeline}</h3>
@@ -435,6 +455,7 @@ function viewAsk() {
       <p class="q">${x.via === "transcribe" ? `<span class="via">🎤 Amazon Transcribe</span> ` : ""}${esc(x.q)}</p>
       <div class="a">${x.a ? esc(x.a.answer) : esc(t().askThinking)}</div>
       ${x.a?.protocol ? `<div class="protocol"><b>${t().askProtocol}: ${esc(x.a.protocol.title)}</b><ol class="steps">${x.a.protocol.steps.map((st) => `<li><span>${esc(st)}</span></li>`).join("")}</ol>${x.a.protocol.call_108 ? `<a class="btn red block" href="tel:108">📞 ${t().call108}</a>` : ""}</div>` : ""}
+      ${x.a?.facts ? `<div class="facts">📋 ${esc(x.a.facts)}</div>` : ""}
       ${x.a?.trace?.length ? `<div class="trace">${t().askTrace}: ${x.a.trace.map((c) => `<code>${esc(c.tool)}(${esc(Object.entries(c.args || {}).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join("+") : v}`).join(", "))})</code>`).join(" ")}</div>` : ""}
       ${x.a ? `<div class="ev">${x.a.model_unavailable ? esc(t().askFallback) : esc(t().askEvidence((x.a.tools_used || []).join(", ") || "plan"))}${x.a.engine && x.a.engine !== "rules" ? `${x.a.engine.startsWith("strands") ? " · Strands Agents" : ""} · Amazon Bedrock${x.a.model ? ` · ${esc(String(x.a.model).split(".").pop())}` : ""}` : ""}</div>
       <button class="btn ghost" style="margin-top:8px" data-action="speak" data-i="${i}">${I.play} ${t().speakAnswer}</button>` : ""}`).reverse().join("")}</div>`;
@@ -467,7 +488,7 @@ function viewReplay(key) {
       <div class="strip-label">${t().chhaonRow} (${esc(t().workload[p.workload])})</div>${stripHtml(p.crew.hours, "plan", -1)}
       ${official}
       <p class="legend">${t().legend}</p>
-      <p class="impact">${esc(t().impact(p.unsafe_hours_avoided, fmtMins(p.crew.planned_minutes), fmtMins(p.crew.target_minutes), Math.round(p.worker_hours_protected)))}</p>
+      <p class="impact">${esc(t().impact(p.unsafe_hours_avoided, fmtMins(p.crew.planned_minutes), fmtMins(p.crew.target_minutes), Math.round(p.worker_hours_protected), p.normal_minutes_per_hour || 45))}</p>
     </section>
     ${(() => {
       const day = p.crew.hours.filter((h) => h.hour >= 6 && h.hour < 19);
@@ -483,10 +504,10 @@ function viewReplay(key) {
 let draft = null;
 function viewSite() {
   const base = S.payload?.site || { name: "", lat: null, lon: null, workload: "heavy", crew: 20, new_workers: 0, new_worker_day: 1, shaded: false, window_start: 6, window_end: 19 };
-  draft = draft || { ...base };
+  draft = draft || { day_wage: S.payload?.day_wage || 600, ...base };
   const d = draft;
   const choice = (k) => `<button type="button" class="choice" data-action="workload" data-v="${k}" aria-pressed="${d.workload === k}"><span><b>${esc(t().workload[k])}</b><small>${esc(t().workloadEg[k])}</small></span></button>`;
-  const stepper = (k, min, max) => `<div class="stepper"><button type="button" data-action="step" data-k="${k}" data-d="-1" data-min="${min}" data-max="${max}" aria-label="−">−</button><output>${d[k]}</output><button type="button" data-action="step" data-k="${k}" data-d="1" data-min="${min}" data-max="${max}" aria-label="+">+</button></div>`;
+  const stepper = (k, min, max, step = 1) => `<div class="stepper"><button type="button" data-action="step" data-k="${k}" data-d="${-step}" data-min="${min}" data-max="${max}" aria-label="−">−</button><output>${d[k]}</output><button type="button" data-action="step" data-k="${k}" data-d="${step}" data-min="${min}" data-max="${max}" aria-label="+">+</button></div>`;
   return `
     <h1 class="view-title">${t().siteTitle}</h1>
     <label class="field"><span>${t().siteName}</span><input id="site-name" value="${esc(d.name)}" maxlength="80"></label>
@@ -500,6 +521,7 @@ function viewSite() {
     <div class="field"><span>${t().siteCrew}</span>${stepper("crew", 1, 500)}</div>
     <div class="field"><span>${t().siteNew}</span>${stepper("new_workers", 0, 200)}</div>
     <div class="field"><span>${t().siteNewDay}</span>${stepper("new_worker_day", 1, 5)}</div>
+    <div class="field"><span>${t().siteWage}</span>${stepper("day_wage", 200, 3000, 50)}</div>
     <div class="field"><span>${t().siteShade}</span><div class="choices" style="grid-template-columns:1fr 1fr">
       <button type="button" class="choice" data-action="shade" data-v="0" aria-pressed="${!d.shaded}"><b>☀️ ${t().sun}</b></button>
       <button type="button" class="choice" data-action="shade" data-v="1" aria-pressed="${!!d.shaded}"><b>🏗️ ${t().roof}</b></button></div></div>
@@ -562,7 +584,7 @@ function nextAnnouncement() {
 }
 function startAnnouncer() {
   if (!S.feedTimer) S.feedTimer = setInterval(loadFeed, 10000);
-  if (!S.tickTimer) S.tickTimer = setInterval(localTick, 15000);
+  if (!S.tickTimer) S.tickTimer = setInterval(localTick, 5000);
   if (!S.dayAudio) S.dayAudio = store.get(`audio.${dayKey()}`);
 }
 function localTick() {
@@ -571,8 +593,9 @@ function localTick() {
   for (const e of S.dayAudio.events) {
     const k = `${istDate()}|${e.at}|${e.kind}`;
     const late = n.mins - toMins(e.at);
-    // the feed normally plays it within seconds; fall back to the cached audio after a minute
-    if (late >= 1 && late < 3 && !S.played.has(k)) { S.played.add(k); play(e.audio, k); }
+    // play at the minute it is due from the day's cached audio; the Scheduler-fired Lambda posts
+    // the same break to the feed within the minute, which covers phones without the audio
+    if (late >= 0 && late < 3 && !S.played.has(k)) { S.played.add(k); play(e.audio, k); }
   }
   const bar = $(".speakerbar");
   if (bar) bar.textContent = t().speakerBar(nextAnnouncement()); // don't re-render: it would clear typed input
@@ -580,6 +603,27 @@ function localTick() {
 async function cacheAudio(urls) {
   try { const c = await caches.open("chhaon-audio-v1"); await Promise.all(urls.map((u) => c.match(u).then((hit) => hit || c.add(u)).catch(() => {}))); } catch {}
 }
+// An open case is watched from every screen: when the re-check question comes, a banner,
+// a chime and a vibration bring the supervisor back to it.
+function watchIncident(id) { store.set("open-incident", id); startIncidentWatch(); }
+function startIncidentWatch() {
+  if (S.incidentTimer || !store.get("open-incident")) return;
+  S.incidentTimer = setInterval(async () => {
+    const id = store.get("open-incident");
+    if (!id) { clearInterval(S.incidentTimer); S.incidentTimer = null; return; }
+    if (location.hash.startsWith(`#/incident/${id}`)) return; // that page polls itself
+    try {
+      const inc = await api(`/incidents/${id}`);
+      if (["resolved", "handed_over"].includes(inc.status)) { store.del("open-incident"); S.attention = null; render(); return; }
+      const key = inc.pending ? `${id}|${inc.pending.asked_at}` : null;
+      if (key && S.attention !== key) {
+        S.attention = key; chime(); try { navigator.vibrate?.([300, 150, 300]); } catch {}
+        render();
+      } else if (!key && S.attention) { S.attention = null; render(); }
+    } catch {}
+  }, 5000);
+}
+
 async function flushQueued() {
   const q = store.get("queue.incidents", []);
   if (!q.length) return;
@@ -599,6 +643,8 @@ async function onRoute() {
   render();
   window.scrollTo(0, 0);
   if (S.speaker) startAnnouncer();
+  startIncidentWatch();
+  if (route === "incident" && parts[1] && parts[1] !== "local" && S.attention?.startsWith(parts[1])) S.attention = null;
   if (route === "today" && S.siteId) {
     await loadPlan();
     await loadFeed();
@@ -645,8 +691,9 @@ async function loadFeed() {
   try {
     const { items } = await api(`/sites/${S.siteId}/feed`);
     const fresh = items.filter((f) => !S.lastFeedTs || f.ts > S.lastFeedTs);
-    if (S.lastFeedTs && S.speaker) {
-      const ann = fresh.filter((f) => f.type === "announcement").pop();
+    if (S.lastFeedTs && (S.speaker || S.expectTest)) {
+      const ann = fresh.filter((f) => f.type === "announcement" && (S.speaker || f.kind === "test")).pop();
+      if (ann?.kind === "test") S.expectTest = false;
       if (ann) {
         const k = `${ann.date || istDate()}|${ann.at}|${ann.kind}`;
         if (!S.played.has(k)) { S.played.add(k); play(ann.audio?.[ann.lang] || Object.values(ann.audio || {})[0], k); }
@@ -664,6 +711,8 @@ async function loadFeed() {
 async function loadIncident(id) {
   try {
     S.incident = await api(`/incidents/${id}`);
+    if (!["resolved", "handed_over"].includes(S.incident.status)) watchIncident(id);
+    else if (store.get("open-incident") === id) store.del("open-incident");
     render();
     if (["resolved", "handed_over", "escalated"].includes(S.incident.status)) clearTimers();
   } catch (e) { showError(e); }
@@ -704,7 +753,7 @@ const actions = {
   },
   async "test-announce"(btn) {
     unlockAudio();
-    S.speaker = true; keepAwake(); startAnnouncer();
+    S.expectTest = true; keepAwake();
     btn.disabled = true;
     try { const r = await api(`/sites/${S.siteId}/test-announcement`, { body: {} }); toast(t().testQueued(fmtTime(r.fires_at)), 6000); }
     catch (e) { toast(e.message); }
@@ -723,10 +772,12 @@ const actions = {
   async "start-incident"(btn) {
     if (!S.selected.size) return toast(t().pickOne);
     btn.disabled = true;
-    const body = { symptoms: [...S.selected], worker: $("#worker")?.value || undefined, lang: S.lang };
+    // one id per report, so a retry (or the offline queue) can never create a second case or email
+    const client_id = (crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`).slice(0, 40);
+    const body = { symptoms: [...S.selected], worker: $("#worker")?.value || undefined, lang: S.lang, client_id };
     try {
       const inc = await api(`/sites/${S.siteId}/incidents`, { body, timeout: 8000 });
-      S.selected.clear(); S.incident = inc;
+      S.selected.clear(); S.incident = inc; watchIncident(inc.id);
       location.hash = `#/incident/${inc.id}`;
     } catch (e) {
       if (e.status && e.status < 500) { toast(e.message); btn.disabled = false; return; }
@@ -753,6 +804,11 @@ const actions = {
       toast(t().briefReady);
     } catch (e) { toast(e.message); }
     btn.disabled = false;
+  },
+  async escalate(btn) {
+    btn.disabled = true;
+    try { await api(`/incidents/${S.incident.id}/escalate`, { body: {} }); await loadIncident(S.incident.id); }
+    catch (e) { toast(e.message); btn.disabled = false; }
   },
   async answer(btn) {
     btn.disabled = true;
@@ -818,7 +874,7 @@ const actions = {
     draft.window_end = $("#night")?.checked ? 22 : 19;
     btn.disabled = true;
     try {
-      const body = { name: draft.name || (S.lang === "hi" ? "मेरी साइट" : "My site"), lat: draft.lat, lon: draft.lon, workload: draft.workload, crew: draft.crew, new_workers: draft.new_workers, new_worker_day: draft.new_worker_day, shaded: !!draft.shaded, window_start: draft.window_start, window_end: draft.window_end, lang: S.lang };
+      const body = { name: draft.name || (S.lang === "hi" ? "मेरी साइट" : "My site"), lat: draft.lat, lon: draft.lon, workload: draft.workload, crew: draft.crew, new_workers: draft.new_workers, new_worker_day: draft.new_worker_day, day_wage: draft.day_wage, shaded: !!draft.shaded, window_start: draft.window_start, window_end: draft.window_end, lang: S.lang };
       const r = S.siteId ? await api(`/sites/${S.siteId}`, { method: "PUT", body }) : await api("/sites", { body });
       S.siteId = r.site_id; store.set("site", r.site_id); S.payload = null; draft = null;
       toast(t().saved);

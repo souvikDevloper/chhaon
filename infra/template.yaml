@@ -75,6 +75,10 @@ Resources:
             Status: Enabled
             Prefix: audio/
             ExpirationInDays: 90
+          - Id: expire-one-off-speech
+            Status: Enabled
+            Prefix: audio/say/
+            ExpirationInDays: 2
 
   WebBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -179,6 +183,9 @@ Resources:
               Action: [states:StartExecution]
               Resource: !Ref ProtocolStateMachine
             - Effect: Allow
+              Action: [states:StopExecution]
+              Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${ProtocolStateMachine.Name}:*"
+            - Effect: Allow
               Action: [states:SendTaskSuccess, states:SendTaskFailure]
               Resource: "*"
             - Effect: Allow
@@ -190,7 +197,7 @@ Resources:
     Properties:
       CodeUri: ../backend/
       Handler: handlers.ask.handler
-      Description: Bedrock agent (Mantle gpt-oss-120b, then Strands/Converse) with planner tools
+      Description: Strands Agents on Bedrock (gpt-oss-120b via the OpenAI-compatible endpoint) with planner tools
       MemorySize: 1024
       Layers: !If [HasStrands, [!Ref StrandsLayerArn], !Ref AWS::NoValue]
       Environment:

@@ -87,25 +87,64 @@ def compute(site: dict, date: str) -> tuple[list[planner.Slot], planner.DayPlan]
     return slots, plan
 
 
+DEFAULT_DAY_WAGE = 600  # rupees for an 8-hour day; the supervisor can change it per site
+
+
+def _rupees(site: dict, worker_hours: float) -> int:
+    wage = int(site.get("day_wage") or DEFAULT_DAY_WAGE)
+    return int(round(worker_hours * wage / 8 / 10.0) * 10)
+
+
 def shade_option(site: dict, date: str, plan: planner.DayPlan) -> dict | None:
-    """What a tarpaulin over the work area would give back: the same day planned in shade."""
+    """What a tarpaulin over the work area could give back: the same day re-planned with no direct
+    sun and half the diffuse light on the workers. An estimate ("up to"), not a promise."""
     if site.get("shaded") or not plan.unsafe_hours_normal:
         return None
     wx = forecast_for(site)
     cfg = site_config(site, date)
-    cfg.shaded = True
-    _, shaded = planner.plan_from_weather(wx["hourly"], wx.get("utc_offset_seconds", 19800), cfg, date)
-    gain = shaded.crew.planned_minutes - plan.crew.planned_minutes
+    cfg.tarp = True
+    _, tarp = planner.plan_from_weather(wx["hourly"], wx.get("utc_offset_seconds", 19800), cfg, date)
+    gain = tarp.crew.planned_minutes - plan.crew.planned_minutes
     if gain <= 0:
         return None
+    wh = round(gain * int(site.get("crew") or 0) / 60)
     return {
-        "planned_minutes": shaded.crew.planned_minutes,
+        "planned_minutes": tarp.crew.planned_minutes,
         "gain_minutes": gain,
-        "gain_worker_hours": round(gain * int(site.get("crew") or 0) / 60),
-        "unsafe_hours_normal": shaded.unsafe_hours_normal,
-        "stop_windows": shaded.crew.stop_windows,
-        "first_start": shaded.crew.first_start,
+        "gain_worker_hours": wh,
+        "gain_rupees": _rupees(site, wh),
+        "unsafe_hours_normal": tarp.unsafe_hours_normal,
+        "stop_windows": tarp.crew.stop_windows,
+        "first_start": tarp.crew.first_start,
     }
+
+
+LIGHTER = {"very_heavy": ("heavy", "moderate", "light"), "heavy": ("moderate", "light"), "moderate": ("light",), "light": ()}
+
+
+def lighter_work(site: dict, date: str, slots: list[planner.Slot], plan: planner.DayPlan) -> dict | None:
+    """During the hours heavy work is stopped, how much lighter work is still safe? Paid hours
+    don't have to be lost: shuttering prep, measuring, material sorting in the shade."""
+    stopped = [h for h in plan.crew.hours if h.status == "stop"]
+    if not stopped:
+        return None
+    cfg = site_config(site, date)
+    by_hour = {s.hour: s for s in slots}
+    for wl in LIGHTER.get(cfg.workload, ()):
+        normal = planner.cool_max_minutes(wl)
+        minutes = [min(normal, planner.hour_limit(by_hour[h.hour].wbgt, wl, True, cfg.clothing).work_minutes) for h in stopped]
+        total = sum(minutes)
+        if total >= 30:
+            wh = round(total * int(site.get("crew") or 0) / 60)
+            return {
+                "workload": wl,
+                "minutes": total,
+                "per_hour": {h.start: m for h, m in zip(stopped, minutes)},
+                "stop_windows": plan.crew.stop_windows,
+                "worker_hours": wh,
+                "rupees": _rupees(site, wh),
+            }
+    return None
 
 
 def plan_payload(site_id: str, site: dict, date: str) -> dict:
@@ -117,12 +156,15 @@ def plan_payload(site_id: str, site: dict, date: str) -> dict:
         shade = shade_option(site, date, plan)
     except Exception:
         shade = None
+    lighter = lighter_work(site, date, slots, plan)
     return {
         "site_id": site_id,
         "site": {**site, "new_worker_day": site_config(site, date).new_worker_day},
         "date": date,
         "plan": data,
         "shade": shade,
+        "lighter": lighter,
+        "day_wage": int(site.get("day_wage") or DEFAULT_DAY_WAGE),
         "published": bool(published),
         "now": datetime.now(IST).strftime("%H:%M"),
         "method": "Liljegren outdoor WBGT from the Open-Meteo forecast; ACGIH screening limits",
@@ -190,35 +232,36 @@ def publish(site_id: str, site: dict, date: str) -> dict:
 
 
 def brief(site: dict, date: str, lang: str) -> dict:
-    """The day's plan as a short voice note for the crew's WhatsApp group. Fixed template."""
+    """The day's plan as a short voice note for the crew's WhatsApp group. Fixed template.
+    Made in the middle of the day, it only mentions what is still ahead."""
     _, plan = compute(site, date)
     c = plan.crew
     say = lambda hhmm: announce.spoken_time(hhmm, lang)  # noqa: E731
     is_today = date == today()
-    if lang == "en":
-        parts = [f"Chhaon plan for {site.get('name', 'the site')}, {'today' if is_today else 'tomorrow'}."]
-        if not c.first_start:
-            parts.append("It is too hot for this work at any time. No work in the sun.")
-        else:
-            parts.append(f"Work starts at {say(c.first_start)}.")
-            parts += [f"No work from {say(a)} to {say(b)}." for a, b in c.stop_windows]
-            parts.append(f"Work ends at {say(c.last_end)}.")
-        if plan.new_workers and plan.new_workers.exposure_factor < 1:
-            parts.append("Workers in their first week will work less; the supervisor will tell you when.")
-        parts.append("Drink a glass of water every fifteen to twenty minutes, and rest in the shade. If you feel dizzy, sick, a bad headache or very weak, tell the supervisor at once. In an emergency call 108.")
+    now = datetime.now(IST).strftime("%H:%M") if is_today else "00:00"
+    stops = [(a, b) for a, b in c.stop_windows if b > now]
+    hi = lang != "en"
+    parts = [f"छाँव की ओर से {site.get('name', 'साइट')} के साथियों के लिए {'आज' if is_today else 'कल'} का प्लान।" if hi
+             else f"Chhaon plan for {site.get('name', 'the site')}, {'today' if is_today else 'tomorrow'}."]
+    if not c.first_start:
+        parts.append("इस काम के लिए कोई भी समय सुरक्षित नहीं। धूप में यह काम नहीं होगा।" if hi else "It is too hot for this work at any time. It will not be done in the sun.")
+    elif c.last_end <= now:
+        parts.append("आज का काम ख़त्म हो चुका है।" if hi else "Today's work is over.")
     else:
-        parts = [f"छाँव की ओर से {site.get('name', 'साइट')} के साथियों के लिए {'आज' if is_today else 'कल'} का प्लान।"]
-        if not c.first_start:
-            parts.append("इस काम के लिए आज कोई भी समय सुरक्षित नहीं। धूप में काम नहीं होगा।")
-        else:
-            parts.append(f"काम {say(c.first_start)} शुरू होगा।")
-            parts += [f"{say(a)} से {say(b)} तक काम बंद रहेगा।" for a, b in c.stop_windows]
-            parts.append(f"काम {say(c.last_end)} ख़त्म होगा।")
-        if plan.new_workers and plan.new_workers.exposure_factor < 1:
-            parts.append("पहले हफ़्ते वाले नए साथी आज कम काम करेंगे, सुपरवाइज़र समय बताएँगे।")
-        parts.append("हर पंद्रह-बीस मिनट पर एक गिलास पानी पीजिए और छाँव में आराम कीजिए। चक्कर, उल्टी, तेज़ सिरदर्द या बहुत कमज़ोरी लगे तो तुरंत सुपरवाइज़र को बताइए। इमरजेंसी में 108 पर कॉल कीजिए।")
+        if c.first_start > now:
+            parts.append(f"काम {say(c.first_start)} शुरू होगा।" if hi else f"Work starts at {say(c.first_start)}.")
+        for a, b in stops:
+            if a <= now:
+                parts.append(f"अभी {say(b)} तक काम बंद है।" if hi else f"No work now until {say(b)}.")
+            else:
+                parts.append(f"{say(a)} से {say(b)} तक काम बंद रहेगा।" if hi else f"No work from {say(a)} to {say(b)}.")
+        parts.append(f"काम {say(c.last_end)} ख़त्म होगा।" if hi else f"Work ends at {say(c.last_end)}.")
+    if plan.new_workers and plan.new_workers.exposure_factor < 1:
+        parts.append("पहले हफ़्ते वाले नए साथी आज कम काम करेंगे, सुपरवाइज़र समय बताएँगे।" if hi else "Workers in their first week will work less; the supervisor will tell you when.")
+    parts.append("हर पंद्रह-बीस मिनट पर एक गिलास पानी पीजिए और छाँव में आराम कीजिए। चक्कर, उल्टी, तेज़ सिरदर्द या बहुत कमज़ोरी लगे तो तुरंत सुपरवाइज़र को बताइए। इमरजेंसी में 108 पर कॉल कीजिए।" if hi
+                 else "Drink a glass of water every fifteen to twenty minutes, and rest in the shade. If you feel dizzy, sick, a bad headache or very weak, tell the supervisor at once. In an emergency call 108.")
     text = " ".join(parts)
-    return {"date": date, "lang": lang, "text": text, "audio": voice.speak(text, lang)}
+    return {"date": date, "lang": lang, "text": text, "audio": voice.speak(text, lang, prefix="audio/say", cache="public, max-age=86400")}
 
 
 def announce_event(site_id: str, event: dict, date: str | None = None) -> dict:

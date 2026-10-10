@@ -77,7 +77,9 @@ def publish_day(site_id: str, date: str, events: list[dict], replace: list[str] 
 
 
 def test_in(site_id: str, seconds: int = 60) -> dict:
-    when = datetime.now(IST) + timedelta(seconds=seconds)
+    # Scheduler fires one-time schedules at minute resolution, so aim at the start of a minute
+    # (at least ~45 s away): the test then arrives when the screen says it will.
+    when = (datetime.now(IST) + timedelta(seconds=max(45, seconds - 15) + 59)).replace(second=0, microsecond=0)
     ev = {"at": when.strftime("%H:%M:%S"), "kind": "test", "minutes": 0}
     name = _name(site_id, when.strftime("%Y-%m-%d"), when.strftime("%H%M%S"), "test")
     _create(name, when.replace(tzinfo=None, microsecond=0), {"site_id": site_id, "date": when.strftime("%Y-%m-%d"), "event": ev})

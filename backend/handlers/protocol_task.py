@@ -64,10 +64,16 @@ def handler(event, context):
             "The supervisor has been told to call 108 and start cooling.",
         )
         store.add_feed(state["site_id"], {"type": "alert", "incident_id": inc_id, "level": "red", "notified": sent})
+        if sent:
+            _log(state, "notified", "Safety officer emailed (Amazon SNS)." if lang == "en" else "सेफ़्टी ऑफ़िसर को ईमेल भेजा गया (Amazon SNS)।")
         return {**state, "level": "red"}
 
     if action == "care":
         level = state["level"]
+        if level == "green":  # heat rash: advice only, nothing to re-check
+            _log(state, "care", "Advice given. Keep the skin cool and dry." if lang == "en" else "सलाह दी गई। त्वचा ठंडी और सूखी रखिए।",
+                 level=level, status="resolved", guidance=protocol.guidance(level, lang))
+            return state
         _log(
             state,
             "care",

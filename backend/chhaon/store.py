@@ -186,6 +186,22 @@ def first_time(key: str, ttl_days: int = 3) -> bool:
         return False
 
 
+def set_marker(key: str, value: str, ttl_days: int = 3) -> None:
+    table().put_item(Item={"PK": f"ONCE#{key}", "SK": "ONCE", "value": value, "ttl": int(time.time()) + ttl_days * 86400})
+
+
+def get_marker(key: str) -> str | None:
+    item = table().get_item(Key={"PK": f"ONCE#{key}", "SK": "ONCE"}).get("Item")
+    return item.get("value") if item else None
+
+
+def refresh_site(site_id: str, ttl_days: int = 30) -> None:
+    """Keep a site that is still being planned from expiring."""
+    site = get_site(site_id)
+    if site:
+        put_site(site_id, site, ttl_days)
+
+
 # ---- rate limiting ----
 
 def allow(key: str, per_minute: int) -> bool:

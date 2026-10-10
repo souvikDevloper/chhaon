@@ -32,6 +32,7 @@ class SiteConfig:
     new_workers: int = 0
     new_worker_day: int = 1
     shaded: bool = False
+    tarp: bool = False  # what-if: a tarpaulin over the work area
     clothing: str = "normal"
     window_start: int = 6  # earliest hour work may start
     window_end: int = 19  # work must end by this hour
@@ -42,6 +43,11 @@ class SiteConfig:
 
     def baseline_hours(self) -> list[int]:
         return [h for h in range(self.baseline_start, self.baseline_end) if h != self.lunch_hour]
+
+    @property
+    def night_work(self) -> bool:
+        """The site is lit and may work outside daylight (the "night work" option widens the window)."""
+        return self.window_end > 19 or self.window_start < 6
 
     @classmethod
     def from_dict(cls, d: dict) -> "SiteConfig":
@@ -73,9 +79,13 @@ class Slot:
     wbgt: float
     globe: float
     wet_bulb: float
+    daylight: bool = True  # the whole hour is between civil dawn and dusk (sun above -6 degrees)
 
 
-def compute_slots(hourly: dict, utc_offset_seconds: int, lat: float, lon: float, date: str, shaded: bool = False, urban: bool = True) -> list[Slot]:
+CIVIL_TWILIGHT_CZA = -0.1045  # cos(96 degrees)
+
+
+def compute_slots(hourly: dict, utc_offset_seconds: int, lat: float, lon: float, date: str, shaded: bool = False, urban: bool = True, tarp: bool = False) -> list[Slot]:
     """Hour slots [h, h+1) for `date` from Open-Meteo hourly arrays (local time).
 
     Temperature, humidity, wind and pressure are instantaneous at the hour mark, so
@@ -124,7 +134,9 @@ def compute_slots(hourly: dict, utc_offset_seconds: int, lat: float, lon: float,
             direct_wm2=direct,
             urban=urban,
             shaded=shaded,
+            tarp=tarp,
         )
+        light = all(solar_position(t, lat, lon)[0] >= CIVIL_TWILIGHT_CZA for t in (t0, t1))
         slots.append(
             Slot(
                 hour=h,
@@ -136,6 +148,7 @@ def compute_slots(hourly: dict, utc_offset_seconds: int, lat: float, lon: float,
                 wbgt=round(res.wbgt, 1),
                 globe=round(res.globe, 1),
                 wet_bulb=round(res.psychrometric_wet_bulb, 1),
+                daylight=light,
             )
         )
     return slots
@@ -201,26 +214,31 @@ def _fmt(h: int, m: int = 0) -> str:
     return f"{h:02d}:{m:02d}"
 
 
-def _plan_group(slots: list[Slot], cfg: SiteConfig, acclimatised: bool, factor: float, label: str) -> GroupPlan:
-    window = [s for s in slots if cfg.window_start <= s.hour < cfg.window_end]
-    baseline = set(cfg.baseline_hours())
-    limits = {s.hour: hour_limit(s.wbgt, cfg.workload, acclimatised, cfg.clothing) for s in window}
-    normal = cool_max_minutes(cfg.workload)  # a normal hour of this work on a cool day
-    full_target = len(baseline) * normal
-    target = int(round(full_target * factor / 5.0) * 5)
+def _usable_window(slots: list[Slot], cfg: SiteConfig) -> list[Slot]:
+    """Hours work may be planned in: the site's window and, unless it is lit for night work, daylight."""
+    return [s for s in slots if cfg.window_start <= s.hour < cfg.window_end and (s.daylight or cfg.night_work)]
 
+
+def _fill(window: list[Slot], cfg: SiteConfig, limits: dict, normal: int, target: int, factor: float, avoid: set[int]) -> dict[int, int]:
+    baseline = set(cfg.baseline_hours())
     plan: dict[int, int] = {s.hour: 0 for s in window}
+
+    def usable(h: int) -> bool:
+        return h not in avoid and h != cfg.lunch_hour
+
     if factor >= 1.0:
         # keep the normal shift where it is safe
         for h in sorted(baseline):
-            if h in limits:
+            if h in limits and usable(h):
                 plan[h] = min(normal, limits[h].work_minutes)
     remaining = target - sum(plan.values())
     # move the rest into the coolest hours with spare capacity
     for s in sorted(window, key=lambda s: (s.wbgt, s.hour)):
         if remaining <= 0:
             break
-        spare = limits[s.hour].work_minutes - plan[s.hour]
+        if not usable(s.hour):
+            continue
+        spare = min(normal, limits[s.hour].work_minutes) - plan[s.hour]
         if spare <= 0:
             continue
         add = min(spare, remaining)
@@ -235,7 +253,30 @@ def _plan_group(slots: list[Slot], cfg: SiteConfig, acclimatised: bool, factor: 
             cut = min(plan[s.hour], over)
             plan[s.hour] -= cut
             over -= cut
+    return plan
 
+
+MIN_LONE_BLOCK = 30  # a crew isn't called in for less than this, alone between pauses
+
+
+def _plan_group(slots: list[Slot], cfg: SiteConfig, acclimatised: bool, factor: float, label: str) -> GroupPlan:
+    window = _usable_window(slots, cfg)
+    limits = {s.hour: hour_limit(s.wbgt, cfg.workload, acclimatised, cfg.clothing) for s in window}
+    normal = cool_max_minutes(cfg.workload)  # a normal hour of this work on a cool day
+    full_target = len(cfg.baseline_hours()) * normal
+    target = int(round(full_target * factor / 5.0) * 5)
+
+    # no 15-minute call-ins: an hour with a little work and no work either side is dropped,
+    # and its minutes go to other hours if they have room
+    avoid: set[int] = set()
+    for _ in range(6):
+        plan = _fill(window, cfg, limits, normal, target, factor, avoid)
+        lone = {h for h, m in plan.items() if 0 < m < MIN_LONE_BLOCK and plan.get(h - 1, 0) == 0 and plan.get(h + 1, 0) == 0}
+        if not lone:
+            break
+        avoid |= lone
+
+    baseline = set(cfg.baseline_hours())
     hours: list[HourPlan] = []
     for s in slots:
         lim = limits.get(s.hour) or hour_limit(s.wbgt, cfg.workload, acclimatised, cfg.clothing)
@@ -322,7 +363,7 @@ def build_events(group: GroupPlan) -> list[dict]:
 def plan_day(slots: list[Slot], cfg: SiteConfig, date: str) -> DayPlan:
     crew = _plan_group(slots, cfg, acclimatised=True, factor=1.0, label="crew")
     normal = cool_max_minutes(cfg.workload)
-    window = [s for s in slots if cfg.window_start <= s.hour < cfg.window_end]
+    window = _usable_window(slots, cfg)
     newbies = None
     if cfg.new_workers > 0:
         # NIOSH's ramp limits exposure to heat: it applies only when the heat cuts into
@@ -342,7 +383,7 @@ def plan_day(slots: list[Slot], cfg: SiteConfig, date: str) -> DayPlan:
         water_total = int(round(water_pw * cfg.crew))
     if not normal_unsafe:
         verdict = "normal"
-    elif window_hours and all(h.safe_minutes == 0 for h in window_hours):
+    elif crew.planned_minutes == 0 or (window_hours and all(h.safe_minutes == 0 for h in window_hours)):
         verdict = "stop_all"
     elif crew.stop_windows:
         verdict = "stop_heavy"
@@ -395,13 +436,17 @@ def check_window(slots: list[Slot], cfg: SiteConfig, start_hour: int, hours: int
         }
 
     asked = score(start_hour)
-    options = [score(s) for s in range(cfg.window_start, cfg.window_end - hours + 1)]
+    usable = {s.hour for s in _usable_window(slots, cfg)}
+    options = [score(s) for s in range(cfg.window_start, cfg.window_end - hours + 1) if all(h in usable for h in range(s, s + hours))]
     options = [o for o in options if o is not None]
+    if asked is not None and not all(h in usable for h in range(start_hour, start_hour + hours)):
+        asked["ok"] = False
+        asked["outside_daylight_or_window"] = True
     best = sorted(options, key=lambda o: (-o["min_safe_minutes"], o["max_wbgt"]))[:3]
     return {"workload": wl, "new_workers": not acclimatised, "asked": asked, "best": best}
 
 
 def plan_from_weather(hourly: dict, utc_offset_seconds: int, cfg: SiteConfig, date: str) -> tuple[list[Slot], DayPlan]:
     """The one entry point services use: weather -> slots (with the site's shade/urban settings) -> plan."""
-    slots = compute_slots(hourly, utc_offset_seconds, cfg.lat, cfg.lon, date, shaded=cfg.shaded, urban=cfg.urban)
+    slots = compute_slots(hourly, utc_offset_seconds, cfg.lat, cfg.lon, date, shaded=cfg.shaded, urban=cfg.urban, tarp=cfg.tarp)
     return slots, plan_day(slots, cfg, date)

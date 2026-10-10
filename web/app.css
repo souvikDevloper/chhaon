@@ -282,3 +282,8 @@ main { flex: 1; padding: 16px 16px 112px; }
 .icon-btn.mic.on { background: var(--extreme); border-color: var(--extreme); color: #fff; animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 8px rgba(183, 37, 25, .18); } }
 .qa .via { font-size: 13px; font-weight: 700; color: var(--ink-2); background: var(--mist); border-radius: 6px; padding: 1px 6px; }
+/* an open case needs an answer */
+.attention { display: block; position: sticky; top: 0; z-index: 5; background: var(--extreme); color: #fff; font-weight: 800; font-size: 17px; padding: 10px 16px; text-decoration: none; }
+.tell108 { margin-top: 12px; padding: 12px; border: 2px solid var(--extreme); border-radius: var(--radius-s); font-size: 17px; }
+.tell108 a { display: inline-block; margin-top: 6px; font-weight: 700; }
+.facts { margin-top: 8px; padding: 8px 10px; background: var(--mist); border-radius: var(--radius-s); font-size: 15px; font-weight: 600; }

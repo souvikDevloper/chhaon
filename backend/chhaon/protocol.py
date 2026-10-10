@@ -23,20 +23,20 @@ RECHECK_MINUTES = {"amber": 30, "yellow": 30}
 STEPS = {
     "red": {
         "en": [
-            "Call 108 now. Say: possible heatstroke at a construction site.",
+            "Call 108 now. Say: possible heatstroke at a construction site, and give the site's location (shown below).",
             "Move them to the coolest shade. Lay them down; if vomiting, turn them on their side.",
-            "Remove extra clothing. Pour or spray cool water over the whole body and fan hard.",
+            "Remove extra clothing. Pour or spray cool water over the whole body and fan hard. If there is a tarpaulin and a water drum: lay them on the tarp, lift its edges and pour water in so the body sits in cool water (keep the head out).",
             "Put wet cloths or ice packs on the neck, armpits and groin.",
             "Give nothing to drink if they are not fully awake. No paracetamol.",
-            "Keep cooling without stopping until the ambulance arrives or you reach the hospital.",
+            "Keep cooling without stopping until the ambulance arrives or you reach the hospital. Never leave them alone.",
         ],
         "hi": [
-            "अभी 108 पर कॉल कीजिए। बोलिए: साइट पर लू लगने (हीटस्ट्रोक) का केस है।",
+            "अभी 108 पर कॉल कीजिए। बोलिए: साइट पर लू लगने (हीटस्ट्रोक) का केस है, और साइट की लोकेशन बताइए (नीचे लिखी है)।",
             "सबसे ठंडी छाँव में ले जाइए, लिटाइए। उल्टी हो तो करवट पर लिटाइए।",
-            "फालतू कपड़े हटाइए। पूरे शरीर पर ठंडा पानी डालिए और ज़ोर से हवा कीजिए।",
+            "फालतू कपड़े हटाइए। पूरे शरीर पर ठंडा पानी डालिए और ज़ोर से हवा कीजिए। तिरपाल और पानी का ड्रम हो तो: तिरपाल पर लिटाइए, किनारे उठाइए और पानी भरिए ताकि शरीर ठंडे पानी में रहे (सिर बाहर)।",
             "गर्दन, बगल और जांघ के जोड़ पर गीला कपड़ा या बर्फ़ रखिए।",
             "पूरा होश न हो तो कुछ भी पीने को मत दीजिए। पैरासिटामॉल मत दीजिए।",
-            "एम्बुलेंस आने या अस्पताल पहुँचने तक ठंडा करना बंद मत कीजिए।",
+            "एम्बुलेंस आने या अस्पताल पहुँचने तक ठंडा करना बंद मत कीजिए। उन्हें अकेला मत छोड़िए।",
         ],
     },
     "amber": {
