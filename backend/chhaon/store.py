@@ -8,6 +8,7 @@ INC#<id>         META                  a heat-illness incident and its timeline 
 ACTIVE           SITE#<id>             sites that get a plan every morning
 WX#<lat>#<lon>   HOUR#<yyyymmddhh>     weather cache (expires after 1 hour)
 RL#<key>         MIN#<minute>          rate-limit counters (expire after 2 minutes)
+ONCE#<key>       ONCE                  "already done" markers, e.g. a day's impact metric (expire after 3 days)
 
 Nested data is stored as JSON strings: no float/Decimal surprises.
 """
@@ -169,6 +170,20 @@ def cached_weather(lat: float, lon: float, fetch) -> dict:
     data = fetch()
     table().put_item(Item={**key, "data": json.dumps(data), "ttl": int(time.time()) + 3600})
     return data
+
+
+# ---- once-only markers ----
+
+def first_time(key: str, ttl_days: int = 3) -> bool:
+    """True the first time `key` is seen (conditional put), False after that."""
+    try:
+        table().put_item(
+            Item={"PK": f"ONCE#{key}", "SK": "ONCE", "ttl": int(time.time()) + ttl_days * 86400},
+            ConditionExpression="attribute_not_exists(PK)",
+        )
+        return True
+    except table().meta.client.exceptions.ConditionalCheckFailedException:
+        return False
 
 
 # ---- rate limiting ----

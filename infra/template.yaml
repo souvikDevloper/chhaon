@@ -159,10 +159,15 @@ Resources:
           Properties: { ApiId: !Ref HttpApi, Path: "/api/{proxy+}", Method: ANY }
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - S3CrudPolicy: { BucketName: !Ref WebBucket }
         - Statement:
             - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource: !Sub "arn:aws:s3:::${WebBucket}/audio/*"
+            - Effect: Allow
               Action: [polly:SynthesizeSpeech]
+              Resource: "*"
+            - Effect: Allow
+              Action: [transcribe:StartStreamTranscriptionWebSocket]
               Resource: "*"
             - Effect: Allow
               Action: [scheduler:CreateSchedule, scheduler:DeleteSchedule, scheduler:GetSchedule]
@@ -241,8 +246,10 @@ Resources:
       Description: Fired by a one-time schedule; speaks the break in Hindi via Polly and posts it to the site feed
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - S3CrudPolicy: { BucketName: !Ref WebBucket }
         - Statement:
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource: !Sub "arn:aws:s3:::${WebBucket}/audio/*"
             - Effect: Allow
               Action: [polly:SynthesizeSpeech]
               Resource: "*"
@@ -274,6 +281,12 @@ Resources:
             - Effect: Allow
               Action: iam:PassRole
               Resource: !GetAtt SchedulerRole.Arn
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource: !Sub "arn:aws:s3:::${WebBucket}/audio/*"
+            - Effect: Allow
+              Action: [polly:SynthesizeSpeech]
+              Resource: "*"
 
   # ---------- heat-illness protocol ----------
   ProtocolFunction:
@@ -501,13 +514,14 @@ Resources:
       DashboardBody: !Sub |
         {
           "widgets": [
-            {"type":"text","x":0,"y":0,"width":24,"height":2,"properties":{"markdown":"# Chhaon - heat-safe shifts\nUnsafe work-hours moved out of the heat, breaks announced on time, and every heat-illness case followed through."}},
-            {"type":"metric","x":0,"y":2,"width":8,"height":6,"properties":{"title":"Unsafe work-hours avoided","region":"${AWS::Region}","stat":"Sum","period":86400,"view":"singleValue","metrics":[["Chhaon","UnsafeHoursAvoided","Service","chhaon"]]}},
-            {"type":"metric","x":8,"y":2,"width":8,"height":6,"properties":{"title":"Break announcements delivered","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","AnnouncementsDelivered","Service","chhaon"]]}},
-            {"type":"metric","x":16,"y":2,"width":8,"height":6,"properties":{"title":"Heat-illness cases by level","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","Incidents","Level","red"],["...","amber"],["...","yellow"],["...","green"]]}},
-            {"type":"metric","x":0,"y":8,"width":8,"height":6,"properties":{"title":"Plans published","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","PlansPublished","Service","chhaon"]]}},
+            {"type":"text","x":0,"y":0,"width":24,"height":2,"properties":{"markdown":"# Chhaon - heat-safe shifts\nWork moved out of unsafe heat (counted once per site per day; real sites and demo sites shown separately), breaks announced on time, and every heat-illness case followed through."}},
+            {"type":"metric","x":0,"y":2,"width":8,"height":6,"properties":{"title":"Worker-hours kept out of unsafe heat","region":"${AWS::Region}","stat":"Sum","period":86400,"view":"singleValue","setPeriodToTimeRange":true,"metrics":[["Chhaon","WorkerHoursProtected","Kind","site",{"label":"real sites"}],["...","demo",{"label":"demo sites"}]]}},
+            {"type":"metric","x":8,"y":2,"width":8,"height":6,"properties":{"title":"Unsafe normal-shift hours fixed","region":"${AWS::Region}","stat":"Sum","period":86400,"view":"singleValue","setPeriodToTimeRange":true,"metrics":[["Chhaon","UnsafeHoursAvoided","Kind","site",{"label":"real sites"}],["...","demo",{"label":"demo sites"}]]}},
+            {"type":"metric","x":16,"y":2,"width":8,"height":6,"properties":{"title":"Break announcements: sent, and played on site","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","AnnouncementsSent","Service","chhaon",{"label":"sent by Scheduler + Lambda"}],["Chhaon","AnnouncementsPlayed","Kind","site",{"label":"played (real sites)"}],["...","demo",{"label":"played (demo)"}]]}},
+            {"type":"metric","x":0,"y":8,"width":8,"height":6,"properties":{"title":"Heat-illness cases by level","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","Incidents","Level","red"],["...","amber"],["...","yellow"],["...","green"]]}},
             {"type":"metric","x":8,"y":8,"width":8,"height":6,"properties":{"title":"Protocol runs","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["AWS/States","ExecutionsStarted","StateMachineArn","${ProtocolStateMachine}"],[".","ExecutionsSucceeded",".","."],[".","ExecutionsFailed",".","."]]}},
-            {"type":"metric","x":16,"y":8,"width":8,"height":6,"properties":{"title":"Assistant answers by engine","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","AgentAnswers","Engine","bedrock-mantle"],["...","strands"],["...","converse"],["...","rules"]]}}
+            {"type":"metric","x":16,"y":8,"width":8,"height":6,"properties":{"title":"Assistant answers by engine","region":"${AWS::Region}","stat":"Sum","period":3600,"metrics":[["Chhaon","AgentAnswers","Engine","bedrock-mantle"],["...","strands"],["...","converse"],["...","rules"]]}},
+            {"type":"metric","x":0,"y":14,"width":8,"height":6,"properties":{"title":"Site-days planned","region":"${AWS::Region}","stat":"Sum","period":86400,"metrics":[["Chhaon","SiteDaysPlanned","Kind","site",{"label":"real sites"}],["...","demo",{"label":"demo sites"}]]}}
           ]
         }
 

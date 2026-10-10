@@ -5,7 +5,7 @@ from __future__ import annotations
 TEMPLATES = {
     "day_start": {
         "hi": "नमस्ते। आज का काम अभी शुरू। पहले एक गिलास पानी पीजिए। हर बीस मिनट पर पानी पीते रहिए।",
-        "en": "Good morning. Work starts now. Drink a glass of water first, then one every twenty minutes.",
+        "en": "Hello. Work starts now. Drink a glass of water first, then one every twenty minutes.",
     },
     "rest": {
         "hi": "अब {minutes} मिनट आराम। छाँव में बैठिए और एक गिलास पानी पीजिए।",
@@ -16,7 +16,7 @@ TEMPLATES = {
         "en": "Rest is over. Work for the next {minutes} minutes. Keep drinking water.",
     },
     "pause": {
-        "hi": "धूप अब बहुत ख़तरनाक है। काम {until} बजे तक बंद। छाँव में आराम कीजिए, ORS या नमक-नींबू पानी पीजिए।",
+        "hi": "धूप अब बहुत ख़तरनाक है। काम {until} तक बंद। छाँव में आराम कीजिए, ORS या नमक-नींबू पानी पीजिए।",
         "en": "The heat is now dangerous. Work stops until {until}. Rest in the shade and drink ORS or salted lemon water.",
     },
     "resume": {
@@ -27,6 +27,10 @@ TEMPLATES = {
         "hi": "आज का काम खत्म। घर पर भी पानी पीते रहिए। किसी को चक्कर, उल्टी या तेज़ सिरदर्द हो तो तुरंत सुपरवाइज़र को बताइए।",
         "en": "Work is over for today. Keep drinking water at home. Anyone dizzy, vomiting or with a bad headache must tell the supervisor now.",
     },
+    "day_end_next": {
+        "hi": "आज का काम खत्म। कल काम {tomorrow} शुरू होगा। घर पर भी पानी पीते रहिए। किसी को चक्कर, उल्टी या तेज़ सिरदर्द हो तो तुरंत सुपरवाइज़र को बताइए।",
+        "en": "Work is over for today. Tomorrow work starts at {tomorrow}. Keep drinking water at home. Anyone dizzy, vomiting or with a bad headache must tell the supervisor now.",
+    },
     "test": {
         "hi": "यह छाँव की जाँच घोषणा है। अगला ब्रेक समय पर बताया जाएगा।",
         "en": "This is a Chhaon test announcement. The next break will be announced on time.",
@@ -36,7 +40,40 @@ TEMPLATES = {
 LANGS = ("hi", "en")
 
 
+def spoken_time(hhmm: str, lang: str = "hi") -> str:
+    """How a person says a time: "दोपहर 1 बजे", "शाम साढ़े 4 बजे"; "1 PM", "4:30 PM"."""
+    if not hhmm:
+        return ""
+    h, m = (int(x) for x in hhmm.split(":"))
+    h %= 24
+    if lang == "en":
+        h12 = h % 12 or 12
+        ampm = "AM" if h < 12 else "PM"
+        return f"{h12} {ampm}" if m == 0 else f"{h12}:{m:02d} {ampm}"
+    period = "सुबह" if 4 <= h < 12 else "दोपहर" if 12 <= h < 16 else "शाम" if 16 <= h < 20 else "रात"
+    h12 = h % 12 or 12
+    nxt = h12 % 12 + 1
+    if m == 0:
+        clock = f"{h12} बजे"
+    elif m == 30:
+        clock = {1: "डेढ़ बजे", 2: "ढाई बजे"}.get(h12, f"साढ़े {h12} बजे")
+    elif m == 15:
+        clock = f"सवा {h12} बजे"
+    elif m == 45:
+        clock = f"पौने {nxt} बजे"
+    else:
+        clock = f"{h12} बजकर {m} मिनट"
+    return f"{period} {clock}"
+
+
 def text_for(event: dict, lang: str) -> str:
     lang = lang if lang in LANGS else "hi"
-    tpl = TEMPLATES[event["kind"]][lang]
-    return tpl.format(minutes=event.get("minutes", ""), until=event.get("until", ""))
+    kind = event["kind"]
+    if kind == "day_end" and event.get("tomorrow"):
+        kind = "day_end_next"
+    tpl = TEMPLATES[kind][lang]
+    return tpl.format(
+        minutes=event.get("minutes", ""),
+        until=spoken_time(event.get("until", ""), lang),
+        tomorrow=spoken_time(event.get("tomorrow", ""), lang),
+    )

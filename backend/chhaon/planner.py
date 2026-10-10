@@ -16,7 +16,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from .limits import FULL_HOUR_MINUTES, exposure_factor, hour_limit
+from .limits import cool_max_minutes, exposure_factor, hour_limit
+
+WATER_L_PER_HOUR = 0.75  # NIOSH: one cup (about 240 ml) every 15-20 minutes when working in the heat
 from .solar import solar_position
 from .wbgt import outdoor_wbgt
 
@@ -152,7 +154,7 @@ class HourPlan:
     rest_minutes: int
     status: str  # work | free | stop | off
     in_normal_shift: bool
-    normal_overexposure: int  # minutes a normal shift would work above the safe share
+    normal_overexposure: int  # minutes a normal shift would work above the safe share because of heat
 
 
 @dataclass
@@ -180,6 +182,10 @@ class DayPlan:
     unsafe_hours_planned: int
     unsafe_hours_avoided: int
     overexposure_minutes_avoided: int
+    worker_hours_protected: float  # crew x minutes a normal shift would have worked above the limit
+    normal_minutes_per_hour: int
+    water_litres_per_worker: float | None
+    water_litres_total: int | None
     peak_wbgt: float | None
     peak_time: str | None
     verdict: str  # normal | adjusted | stop_heavy | stop_all
@@ -199,7 +205,8 @@ def _plan_group(slots: list[Slot], cfg: SiteConfig, acclimatised: bool, factor: 
     window = [s for s in slots if cfg.window_start <= s.hour < cfg.window_end]
     baseline = set(cfg.baseline_hours())
     limits = {s.hour: hour_limit(s.wbgt, cfg.workload, acclimatised, cfg.clothing) for s in window}
-    full_target = len(baseline) * FULL_HOUR_MINUTES
+    normal = cool_max_minutes(cfg.workload)  # a normal hour of this work on a cool day
+    full_target = len(baseline) * normal
     target = int(round(full_target * factor / 5.0) * 5)
 
     plan: dict[int, int] = {s.hour: 0 for s in window}
@@ -207,7 +214,7 @@ def _plan_group(slots: list[Slot], cfg: SiteConfig, acclimatised: bool, factor: 
         # keep the normal shift where it is safe
         for h in sorted(baseline):
             if h in limits:
-                plan[h] = min(FULL_HOUR_MINUTES, limits[h].work_minutes)
+                plan[h] = min(normal, limits[h].work_minutes)
     remaining = target - sum(plan.values())
     # move the rest into the coolest hours with spare capacity
     for s in sorted(window, key=lambda s: (s.wbgt, s.hour)):
@@ -242,7 +249,7 @@ def _plan_group(slots: list[Slot], cfg: SiteConfig, acclimatised: bool, factor: 
             status = "stop"
         else:
             status = "free"
-        normal = s.hour in baseline
+        in_normal = s.hour in baseline
         hours.append(
             HourPlan(
                 hour=s.hour,
@@ -255,8 +262,8 @@ def _plan_group(slots: list[Slot], cfg: SiteConfig, acclimatised: bool, factor: 
                 work_minutes=work,
                 rest_minutes=60 - work if work else 0,
                 status=status,
-                in_normal_shift=normal,
-                normal_overexposure=max(0, FULL_HOUR_MINUTES - lim.work_minutes) if normal else 0,
+                in_normal_shift=in_normal,
+                normal_overexposure=max(0, normal - lim.work_minutes) if in_normal else 0,
             )
         )
 
@@ -314,15 +321,25 @@ def build_events(group: GroupPlan) -> list[dict]:
 
 def plan_day(slots: list[Slot], cfg: SiteConfig, date: str) -> DayPlan:
     crew = _plan_group(slots, cfg, acclimatised=True, factor=1.0, label="crew")
+    normal = cool_max_minutes(cfg.workload)
+    window = [s for s in slots if cfg.window_start <= s.hour < cfg.window_end]
     newbies = None
     if cfg.new_workers > 0:
-        newbies = _plan_group(
-            slots, cfg, acclimatised=False, factor=exposure_factor(cfg.new_worker_day), label="new_workers"
-        )
+        # NIOSH's ramp limits exposure to heat: it applies only when the heat cuts into
+        # new workers' hours at all (stricter Action Limit), not on a cool day.
+        hot_for_new = any(hour_limit(s.wbgt, cfg.workload, False, cfg.clothing).work_minutes < normal for s in window)
+        factor = exposure_factor(cfg.new_worker_day) if hot_for_new else 1.0
+        newbies = _plan_group(slots, cfg, acclimatised=False, factor=factor, label="new_workers")
     normal_unsafe = [h for h in crew.hours if h.in_normal_shift and h.normal_overexposure > 0]
     planned_unsafe = [h for h in crew.hours if h.work_minutes > h.safe_minutes]
     window_hours = [h for h in crew.hours if h.status != "off"]
     peak = max(slots, key=lambda s: s.wbgt) if slots else None
+    over_minutes = sum(h.normal_overexposure for h in normal_unsafe)
+    water_pw = water_total = None
+    if normal_unsafe and crew.planned_minutes:
+        # a cup every 15-20 minutes of work in the heat; rest breaks in shade not counted
+        water_pw = max(0.5, round(crew.planned_minutes / 60 * WATER_L_PER_HOUR * 2) / 2)  # nearest half litre
+        water_total = int(round(water_pw * cfg.crew))
     if not normal_unsafe:
         verdict = "normal"
     elif window_hours and all(h.safe_minutes == 0 for h in window_hours):
@@ -340,7 +357,11 @@ def plan_day(slots: list[Slot], cfg: SiteConfig, date: str) -> DayPlan:
         unsafe_hours_normal=len(normal_unsafe),
         unsafe_hours_planned=len(planned_unsafe),
         unsafe_hours_avoided=len(normal_unsafe) - len(planned_unsafe),
-        overexposure_minutes_avoided=sum(h.normal_overexposure for h in normal_unsafe),
+        overexposure_minutes_avoided=over_minutes,
+        worker_hours_protected=round(over_minutes * cfg.crew / 60, 1),
+        normal_minutes_per_hour=normal,
+        water_litres_per_worker=water_pw,
+        water_litres_total=water_total,
         peak_wbgt=peak.wbgt if peak else None,
         peak_time=peak.start if peak else None,
         verdict=verdict,
@@ -354,6 +375,7 @@ def check_window(slots: list[Slot], cfg: SiteConfig, start_hour: int, hours: int
     acclimatised=False uses the stricter Action Limit for workers in their first week."""
     wl = workload or cfg.workload
     by_hour = {s.hour: s for s in slots}
+    ok_minutes = min(45, cool_max_minutes(wl, acclimatised))
 
     def score(start: int) -> dict | None:
         rows = []
@@ -369,7 +391,7 @@ def check_window(slots: list[Slot], cfg: SiteConfig, start_hour: int, hours: int
             "hours": rows,
             "min_safe_minutes": min(r["safe_minutes"] for r in rows),
             "max_wbgt": max(r["wbgt"] for r in rows),
-            "ok": all(r["safe_minutes"] >= 45 for r in rows),
+            "ok": all(r["safe_minutes"] >= ok_minutes for r in rows),
         }
 
     asked = score(start_hour)

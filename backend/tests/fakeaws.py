@@ -50,6 +50,8 @@ class FakeTable:
             cur = self.items.get(key, {})
             if cur.get("v", 0) != ExpressionAttributeValues[":v"]:
                 raise ConditionalCheckFailedException()
+        if ConditionExpression == "attribute_not_exists(PK)" and key in self.items:
+            raise ConditionalCheckFailedException()
         self.items[key] = dict(Item)
 
     def get_item(self, Key, ConsistentRead=False):

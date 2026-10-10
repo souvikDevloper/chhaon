@@ -33,13 +33,27 @@ ACTION_LIMIT = {  # unacclimatised
     "very_heavy": (None, None, 24.5, 27.0),
 }
 
-# Clothing adjustment added to WBGT before using the table (CCOHS Table 2, subset)
-CLOTHING_ADJUST = {"normal": 0.0, "short_sleeves": -1.0, "coveralls": 0.0, "double_layer": 3.0}
+# Clothing adjustment added to WBGT before using the table (ACGIH clothing adjustment
+# factors as published by CCOHS; work clothes and woven coveralls are the reference, 0)
+CLOTHING_ADJUST = {"normal": 0.0, "coveralls": 0.0, "double_layer": 3.0}
 
 NEW_WORKER_RAMP = (0.2, 0.4, 0.6, 0.8, 1.0)
 RETURNING_RAMP = (0.5, 0.6, 0.8, 1.0)
 
 FULL_HOUR_MINUTES = SHARES[0][1]  # 50
+
+
+def cool_max_minutes(workload: str, acclimatised: bool = True) -> int:
+    """Work minutes per hour the table allows this workload on a cool day.
+
+    Heavy work has no 75-100% row (it is never screened for continuous work), so
+    its normal hour is 45 minutes of work, very heavy 30. An hour is only "unsafe
+    because of heat" when the heat cuts it below this."""
+    row = (TLV if acclimatised else ACTION_LIMIT)[workload]
+    for (share, minutes), limit in zip(SHARES, row):
+        if limit is not None:
+            return minutes
+    return 0
 
 
 @dataclass(frozen=True)

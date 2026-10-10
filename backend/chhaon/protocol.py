@@ -42,6 +42,7 @@ STEPS = {
     "amber": {
         "en": [
             "Stop work for this person now.",
+            "Ask their name, where they are and what day it is. Muddled answers or drowsiness mean heatstroke: call 108.",
             "Shade, lie down, raise the feet a little, loosen clothes.",
             "Small sips of ORS, salted lemon water or coconut water.",
             "Wet cloth on the body and fan.",
@@ -50,6 +51,7 @@ STEPS = {
         ],
         "hi": [
             "इस साथी का काम अभी रोकिए।",
+            "नाम, जगह और आज का दिन पूछिए। जवाब उलझा हुआ हो या नींद-सी आ रही हो तो यह लू (हीटस्ट्रोक) है: 108 पर कॉल कीजिए।",
             "छाँव में लिटाइए, पैर थोड़े ऊपर रखिए, कपड़े ढीले कीजिए।",
             "ORS, नमक-नींबू पानी या नारियल पानी घूँट-घूँट पिलाइए।",
             "शरीर पर गीला कपड़ा रखिए और हवा कीजिए।",

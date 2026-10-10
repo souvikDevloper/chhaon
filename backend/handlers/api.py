@@ -8,7 +8,7 @@ import traceback
 
 import boto3
 
-from chhaon import announce, metrics, places, planner, protocol, schedules, service, store, voice, weather
+from chhaon import announce, listen, metrics, places, planner, protocol, schedules, service, store, voice, weather
 from chhaon.http import HttpError, body, query, respond, source_ip, valid_id
 
 _sfn = None
@@ -40,6 +40,8 @@ def _clean_site(data: dict, base: dict | None = None) -> dict:
                 site[k] = int(site[k])
         site["shaded"] = bool(site.get("shaded", False))
         planner.SiteConfig.from_dict(site)
+        if "new_worker_day" in data or "new_workers" in data:
+            site["new_workers_since"] = service.new_workers_since(site.get("new_worker_day", 1))
     except (KeyError, TypeError, ValueError) as exc:
         raise HttpError(400, f"invalid site: {exc}")
     return site
@@ -68,7 +70,7 @@ def route(event: dict) -> dict:
     if path == "/api/demo" and method == "POST":
         _limit(event, "create", 20)
         site_id = store.new_id()
-        site = {**service.DEMO_SITE, "auto_publish": False, "demo": True}
+        site = {**service.DEMO_SITE, "auto_publish": False, "demo": True, "new_workers_since": service.new_workers_since(service.DEMO_SITE["new_worker_day"])}
         store.put_site(site_id, site, ttl_days=7)
         return respond(201, {"site_id": site_id, "site": site})
 
@@ -118,6 +120,15 @@ def route(event: dict) -> dict:
                 raise HttpError(400, "nothing to speak")
             lang = "en" if data.get("lang") == "en" else "hi"
             return respond(200, {"audio": voice.speak(text, lang)})
+        if sub == "/brief" and method == "POST":
+            _limit(event, "brief", 10)
+            data = body(event)
+            lang = "en" if data.get("lang") == "en" else "hi"
+            return respond(200, service.brief(site, service.resolve_day(data.get("day")), lang))
+        if sub == "/played" and method == "POST":
+            _limit(event, "played", 60)
+            metrics.emit({"AnnouncementsPlayed": 1}, {"Kind": "demo" if site.get("demo") else "site"})
+            return respond(200, {"ok": True})
         if sub == "/feed" and method == "GET":
             return respond(200, {"items": store.feed(site_id, q.get("since"))})
         if sub == "/incidents" and method == "POST":
@@ -135,6 +146,10 @@ def route(event: dict) -> dict:
             raise HttpError(404, "incident not found")
         inc.get("pending", {}) and inc["pending"].pop("token", None)
         return respond(200, inc)
+
+    if path == "/api/listen" and method == "POST":
+        _limit(event, "listen", 10)
+        return respond(200, listen.presign("en" if body(event).get("lang") == "en" else "hi"))
 
     if path == "/api/geocode" and method == "GET":
         _limit(event, "geocode", 30)

@@ -1,7 +1,7 @@
 // Keeps the app shell and announcement audio available when the site's network drops.
-const SHELL = "chhaon-shell-v2";
+const SHELL = "chhaon-shell-v4";
 const AUDIO = "chhaon-audio-v1";
-const FILES = ["/", "/index.html", "/app.css", "/app.js", "/i18n.js", "/icon.svg", "/manifest.webmanifest"];
+const FILES = ["/", "/index.html", "/app.css", "/app.js", "/i18n.js", "/protocol.js", "/listen.js", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

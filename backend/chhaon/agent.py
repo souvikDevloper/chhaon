@@ -17,11 +17,10 @@ import re
 import time
 import urllib.error
 import urllib.request
-from typing import Callable
 
 import boto3
 
-from . import planner, protocol, service
+from . import announce, planner, protocol, service
 
 MODEL_ID = os.environ.get("MODEL_ID", "us.amazon.nova-2-lite-v1:0")
 # Bedrock's OpenAI-compatible endpoint (bedrock-mantle), signed with the function's own IAM role.
@@ -34,7 +33,8 @@ _blocked_until: dict[str, float] = {}  # per backend: "mantle" (bedrock-mantle) 
 
 SYSTEM = """You are Chhaon, a heat-safety assistant for construction site supervisors in India.
 Rules:
-- Reply in the language and script of the question. Hindi or Hinglish question: answer in simple Hindi (Devanagari). English question: simple English.
+- Reply in the language and script of the question. Hindi or Hinglish question: answer in simple Hindi (Devanagari). English question: simple English only, no Hindi words.
+- Say times the way people speak: in Hindi "दोपहर 2 बजे", "शाम 5 से 7 बजे तक" (not "14:00" or "17-19 बजे"); in English "2 PM", "5 to 7 PM".
 - Use only numbers returned by tools. Never guess a temperature, WBGT or time. Call a tool first.
 - Day: "कल" / "kal" / "tomorrow" means day="tomorrow"; "आज" / "aaj" / "today" or no day means day="today". Say the same day back in the answer.
 - A question about a specific time or task ("कल दोपहर 2 बजे ढलाई?") needs check_task with a 24-hour start_hour (सुबह 7 बजे = 7, दोपहर 2 बजे = 14, शाम 5 बजे = 17). If no duration is given, use 2 hours. If the question is about new workers (नए मज़दूर, first week), set new_workers=true. General questions about the day need day_plan.
@@ -79,8 +79,11 @@ TOOL_SPECS = [
 ]
 
 
-def make_tools(site: dict, lang: str) -> dict[str, Callable[..., dict]]:
+def make_tools(site: dict, lang: str) -> dict:
+    """The agent's tools. `_state` records every call (name and arguments) and the last
+    first-aid guidance, so the answer can show its evidence and the fixed protocol text."""
     cache: dict[str, tuple] = {}
+    state: dict = {"trace": [], "first_aid": None}
 
     def _plan(day: str):
         date = service.resolve_day(day)
@@ -89,6 +92,7 @@ def make_tools(site: dict, lang: str) -> dict[str, Callable[..., dict]]:
         return date, cache[date]
 
     def day_plan(day: str = "today") -> dict:
+        state["trace"].append({"tool": "day_plan", "args": {"day": day}})
         date, (slots, p) = _plan(day)
         c = p.crew
         return {
@@ -98,6 +102,7 @@ def make_tools(site: dict, lang: str) -> dict[str, Callable[..., dict]]:
             "work_starts": c.first_start,
             "work_ends": c.last_end,
             "stop_windows": c.stop_windows,
+            "stop_windows_said": [f"{announce.spoken_time(a, lang)} – {announce.spoken_time(b, lang)}" for a, b in c.stop_windows],
             "peak_wbgt": p.peak_wbgt,
             "peak_time": p.peak_time,
             "unsafe_hours_in_normal_9_to_6_shift": p.unsafe_hours_normal,
@@ -117,15 +122,24 @@ def make_tools(site: dict, lang: str) -> dict[str, Callable[..., dict]]:
     def check_task(day: str = "today", start_hour: int = 9, hours: int = 2, workload: str | None = None, new_workers: bool = False) -> dict:
         date, (slots, p) = _plan(day)
         new = new_workers.strip().lower() == "true" if isinstance(new_workers, str) else bool(new_workers)
-        res = planner.check_window(slots, service.site_config(site), int(start_hour), int(hours), workload or None, acclimatised=not new)
+        args = {"day": day, "start_hour": int(start_hour), "hours": int(hours)}
+        if workload:
+            args["workload"] = workload
+        if new:
+            args["new_workers"] = True
+        state["trace"].append({"tool": "check_task", "args": args})
+        res = planner.check_window(slots, service.site_config(site, date), int(start_hour), int(hours), workload or None, acclimatised=not new)
         res["date"] = date
         return res
 
     def first_aid(symptoms: list[str]) -> dict:
+        state["trace"].append({"tool": "first_aid", "args": {"symptoms": list(symptoms)}})
         level = protocol.classify(symptoms)
-        return protocol.guidance(level, lang)
+        out = protocol.guidance(level, lang)
+        state["first_aid"] = out
+        return out
 
-    return {"day_plan": day_plan, "check_task": check_task, "first_aid": first_aid}
+    return {"day_plan": day_plan, "check_task": check_task, "first_aid": first_aid, "_state": state}
 
 
 def _detect_lang(text: str) -> str:
@@ -150,7 +164,7 @@ def _converse(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
     for _ in range(5):
         res = client.converse(
             modelId=MODEL_ID,
-            system=[{"text": SYSTEM + f"\nToday is {service.today()} (Asia/Kolkata). Reply language: {'Hindi' if lang == 'hi' else 'English'}."}],
+            system=[{"text": _system(lang)}],
             messages=messages,
             toolConfig=tool_config,
             inferenceConfig={"maxTokens": 500, "temperature": 0.2},
@@ -195,7 +209,7 @@ def _mantle_post(body: dict, timeout: float = 15.0) -> dict:
 def _mantle(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
     """Chat Completions tool loop on bedrock-mantle."""
     specs = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["schema"]}} for t in TOOL_SPECS]
-    system = SYSTEM + f"\nToday is {service.today()} (Asia/Kolkata). Reply language: {'Hindi' if lang == 'hi' else 'English'}."
+    system = _system(lang)
     messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": question}]
     extra = {"reasoning_effort": "low"} if "gpt-oss" in MANTLE_MODEL else {}
     used: list[str] = []
@@ -229,39 +243,126 @@ def _mantle(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
     return ("माफ़ कीजिए, अभी जवाब नहीं बन पाया।" if lang == "hi" else "Sorry, I could not finish that answer."), used
 
 
-def _strands(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
-    from strands import Agent, tool  # optional dependency, packaged as a Lambda layer
-    from strands.models import BedrockModel
-
-    used: list[str] = []
+def _strands_tools(tools: dict, used: list[str]) -> list:
+    from strands import tool  # optional dependency, packaged as a Lambda layer
 
     @tool
     def day_plan(day: str = "today") -> dict:
-        """The site's heat-safe plan for today or tomorrow (WBGT per hour, safe minutes, stop windows)."""
+        """The site's heat-safe plan for today or tomorrow: verdict, work start/end, stop windows, peak WBGT, and every hour's WBGT, safe work minutes (the limit) and planned work minutes.
+
+        Args:
+            day: "today" or "tomorrow" (कल / kal = tomorrow)
+        """
         used.append("day_plan")
         return tools["day_plan"](day)
 
     @tool
-    def check_task(day: str, start_hour: int, hours: int, workload: str = "", new_workers: bool = False) -> dict:
-        """Check if a task of `hours` from `start_hour` (0-23) is heat-safe; returns safest alternatives. new_workers=True for workers in their first week."""
+    def check_task(day: str, start_hour: int, hours: int = 2, workload: str = "", new_workers: bool = False) -> dict:
+        """Check if a task of N hours starting at an hour is heat-safe, and get the safest alternative windows.
+
+        Args:
+            day: "today" or "tomorrow" (कल / kal = tomorrow)
+            start_hour: 24-hour clock, 0-23 (दोपहर 2 बजे = 14)
+            hours: how long the task takes, 1-10
+            workload: leave empty for the site's crew workload; else light, moderate, heavy or very_heavy
+            new_workers: true if the question is about workers in their first week (stricter limits)
+        """
         used.append("check_task")
         return tools["check_task"](day, start_hour, hours, workload or None, new_workers)
 
     @tool
     def first_aid(symptoms: list[str]) -> dict:
-        """First aid for heat illness. symptoms from: confused, unconscious, seizure, hot_dry_skin, cannot_drink, dizzy, headache, vomiting, nausea, weak, heavy_sweating, fainted_recovered, cramps, rash."""
+        """Heat-illness first aid from India's national guidelines.
+
+        Args:
+            symptoms: any of confused, unconscious, seizure, hot_dry_skin, cannot_drink, dizzy, headache, vomiting, nausea, weak, heavy_sweating, fainted_recovered, cramps, rash
+        """
         used.append("first_aid")
         return tools["first_aid"](symptoms)
 
-    from botocore.config import Config
+    return [day_plan, check_task, first_aid]
 
+
+def _system(lang: str) -> str:
+    from datetime import datetime
+
+    now = datetime.now(service.IST).strftime("%H:%M")
+    return SYSTEM + f"\nToday is {service.today()}, time now {now} (Asia/Kolkata). Reply language: {'Hindi' if lang == 'hi' else 'English'}."
+
+
+def _mantle_openai_client():
+    """An OpenAI client for Bedrock's OpenAI-compatible endpoint, signing every request with
+    SigV4 from the Lambda role (no API key). The HTTP client ignores close() so the Strands
+    model can open and close its client per request while we reuse the connection."""
+    import httpx
+    import openai
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+
+    class SigV4(httpx.Auth):
+        requires_request_body = True
+
+        def auth_flow(self, request):
+            creds = boto3.Session().get_credentials().get_frozen_credentials()
+            signed = AWSRequest(method=request.method, url=str(request.url), data=request.content,
+                                headers={"content-type": request.headers.get("content-type", "application/json")})
+            SigV4Auth(creds, "bedrock-mantle", MANTLE_REGION).add_auth(signed)
+            for k, v in signed.headers.items():
+                request.headers[k] = v
+            yield request
+
+    class KeepOpen(httpx.AsyncClient):
+        async def aclose(self) -> None:  # closed by us at the end of the question
+            pass
+
+        async def really_close(self) -> None:
+            await super().aclose()
+
+    http = KeepOpen(auth=SigV4(), timeout=httpx.Timeout(15.0, connect=5.0))
+    client = openai.AsyncOpenAI(api_key="sigv4", base_url=f"https://bedrock-mantle.{MANTLE_REGION}.api.aws/v1", http_client=http, max_retries=1)
+    return client, http
+
+
+def _strands_mantle(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
+    """Strands Agents drives the tool loop; the model is gpt-oss on Bedrock (bedrock-mantle)."""
+    import asyncio
+
+    from strands import Agent
+    from strands.models.openai import OpenAIModel
+
+    used: list[str] = []
+    client, http = _mantle_openai_client()
+    params = {"max_tokens": 900, "temperature": 0.2}
+    if "gpt-oss" in MANTLE_MODEL:
+        params["reasoning_effort"] = "low"
+    import inspect
+
+    if "client" in inspect.signature(OpenAIModel.__init__).parameters:  # newer Strands: inject the client
+        model = OpenAIModel(client=client, model_id=MANTLE_MODEL, params=params)
+    else:  # older Strands builds the client from these arguments
+        model = OpenAIModel(client_args={"api_key": "sigv4", "base_url": str(client.base_url), "http_client": http, "max_retries": 1}, model_id=MANTLE_MODEL, params=params)
+    agent = Agent(model=model, system_prompt=_system(lang), tools=_strands_tools(tools, used), callback_handler=None)
+    try:
+        result = agent(question)
+    finally:
+        try:
+            asyncio.run(http.really_close())
+        except Exception:
+            pass
+    text = re.sub(r"<thinking>.*?</thinking>", "", str(result), flags=re.S)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    return re.sub(r"\s*\n+\s*", " ", text).strip(), used
+
+
+def _strands(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
+    """Strands Agents with Nova 2 Lite on bedrock-runtime (needs bedrock-runtime quota)."""
+    from botocore.config import Config
+    from strands import Agent
+    from strands.models import BedrockModel
+
+    used: list[str] = []
     model = BedrockModel(model_id=MODEL_ID, temperature=0.2, max_tokens=500, boto_client_config=Config(retries={"max_attempts": 2, "mode": "standard"}, read_timeout=20))
-    agent = Agent(
-        model=model,
-        system_prompt=SYSTEM + f"\nToday is {service.today()} (Asia/Kolkata). Reply language: {'Hindi' if lang == 'hi' else 'English'}.",
-        tools=[day_plan, check_task, first_aid],
-        callback_handler=None,
-    )
+    agent = Agent(model=model, system_prompt=_system(lang), tools=_strands_tools(tools, used), callback_handler=None)
     result = agent(question)
     text = re.sub(r"<thinking>.*?</thinking>", "", str(result), flags=re.S).strip()
     return text, used
@@ -288,7 +389,10 @@ def _rule_based(question: str, tools: dict, lang: str) -> tuple[str, list[str]]:
     found = [s for s, words in SYMPTOM_WORDS.items() if any(w in q for w in words)]
     if found:
         g = tools["first_aid"](found)
-        return f"{g['title']}{'।' if lang == 'hi' else '.'} " + " ".join(g["steps"][:3]), ["first_aid"]
+        tail = "नीचे दिए कदम अभी कीजिए।" if lang == "hi" else "Do the steps below now."
+        if g["call_108"]:
+            tail = ("अभी 108 पर कॉल कीजिए। " if lang == "hi" else "Call 108 now. ") + tail
+        return f"{g['title']}{'।' if lang == 'hi' else '.'} {tail}", ["first_aid"]
     day = "tomorrow" if any(w in q for w in ("kal", "कल", "tomorrow")) else "today"
     m = re.search(r"(\d{1,2})\s*(?:baje|बजे|pm|am|:00)", q) or re.search(r"\b(\d{1,2})\b(?!\s*(?:ghante|घंटे|hours?|hrs?|मिनट|min))", q)
     if m:
@@ -330,7 +434,12 @@ def ask(site: dict, question: str, lang: str | None = None) -> dict:
     tools = make_tools(site, lang)
     errors: list[str] = []
     deadline = time.monotonic() + DEADLINE_S
-    engines = (("bedrock-mantle", _mantle, "mantle"), ("strands", _strands, "runtime"), ("converse", _converse, "runtime"))
+    engines = (
+        ("strands", _strands_mantle, "strands-mantle"),  # Strands Agents + gpt-oss on Bedrock
+        ("bedrock-mantle", _mantle, "mantle"),  # same model, our own tool loop
+        ("strands-nova", _strands, "runtime"),
+        ("converse", _converse, "runtime"),
+    )
     for engine, run, backend in engines:
         if time.time() < _blocked_until.get(backend, 0):
             errors.append(f"{engine}:cooldown")
@@ -339,12 +448,14 @@ def ask(site: dict, question: str, lang: str | None = None) -> dict:
         if remaining < 2:
             errors.append(f"{engine}:no-time")
             break
+        tools["_state"]["trace"].clear()
+        tools["_state"]["first_aid"] = None
         future = _pool.submit(run, question, tools, lang)
         try:
             text, used = future.result(timeout=remaining)
             if text:
-                model = MANTLE_MODEL if engine == "bedrock-mantle" else MODEL_ID
-                return {"answer": text, "tools_used": used, "engine": engine, "model": model, "lang": lang}
+                model = MANTLE_MODEL if engine in ("strands", "bedrock-mantle") else MODEL_ID
+                return _result({"answer": text, "tools_used": used, "engine": engine, "model": model, "lang": lang}, tools)
         except ImportError:
             continue
         except concurrent.futures.TimeoutError:
@@ -355,14 +466,25 @@ def ask(site: dict, question: str, lang: str | None = None) -> dict:
             text = f"{type(exc).__name__} {exc}"
             if backend == "runtime" and any(k in text for k in ("Throttl", "AccessDenied", "Too many tokens")):
                 _blocked_until[backend] = time.time() + COOLDOWN_S
-            elif backend == "mantle":
+            elif backend in ("mantle", "strands-mantle"):
                 _blocked_until[backend] = time.time() + 60
+    tools["_state"]["trace"].clear()
     text, used = _rule_based(question, tools, lang)
-    return {
+    return _result({
         "answer": text,
         "tools_used": used,
         "engine": "rules",
         "model_unavailable": True,
         "error": ",".join(errors) or "unavailable",
         "lang": lang,
-    }
+    }, tools)
+
+
+def _result(res: dict, tools: dict) -> dict:
+    """Attach the tool trace, and the fixed first-aid protocol whenever first aid was asked:
+    the model may paraphrase, but the steps shown and spoken are the national guideline's own."""
+    state = tools["_state"]
+    res["trace"] = state["trace"][-6:]
+    if state["first_aid"]:
+        res["protocol"] = state["first_aid"]
+    return res

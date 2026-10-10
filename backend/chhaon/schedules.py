@@ -1,8 +1,9 @@
 """EventBridge Scheduler: one one-time schedule per announcement.
 
-No polling and no always-on server: each break is a real timer that invokes the
+No always-on server checking the clock: each break is a real timer that invokes the
 announce Lambda at the planned minute (Asia/Kolkata) and deletes itself after it
-fires. Re-publishing a plan replaces that day's schedules.
+fires. Re-publishing a plan replaces that day's schedules. (The phone reads the
+resulting feed every 10 s while announcements are on.)
 """
 from __future__ import annotations
 

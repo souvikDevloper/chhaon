@@ -84,7 +84,37 @@ class ApiFlow(unittest.TestCase):
 
         code, prev = call("POST", f"/api/sites/{sid}/preview", {"kind": "pause", "until": "16:00", "lang": "hi"})
         self.assertEqual(code, 200)
-        self.assertIn("16:00", prev["text"])
+        self.assertIn("शाम 4 बजे", prev["text"])
+
+        # every announcement is synthesised at publish time so the phone can cache it
+        self.assertTrue(pub["events"])
+        self.assertTrue(all(e["audio"].startswith("/audio/") for e in pub["events"]))
+        end = pub["events"][-1]
+        self.assertEqual(end["kind"], "day_end")
+        self.assertIn("कल काम", end["text"])  # tomorrow's start time is announced
+
+        code, brief = call("POST", f"/api/sites/{sid}/brief", {"day": "tomorrow"})
+        self.assertEqual(code, 200, brief)
+        self.assertIn("108", brief["text"])
+        self.assertTrue(brief["audio"].startswith("/audio/"))
+        self.assertEqual(call("POST", f"/api/sites/{sid}/played", {"at": "10:00"})[0], 200)
+
+    def test_new_workers_day_advances(self):
+        code, made = call("POST", "/api/sites", {"name": "Tower D", "lat": 22.6, "lon": 88.4, "workload": "heavy", "crew": 10, "new_workers": 2, "new_worker_day": 1}, ip="2.2.2.2")
+        self.assertEqual(code, 201)
+        sid = made["site_id"]
+        _, today = call("GET", f"/api/sites/{sid}/plan", qs={"day": "today"}, ip="2.2.2.2")
+        _, tomorrow = call("GET", f"/api/sites/{sid}/plan", qs={"day": "tomorrow"}, ip="2.2.2.2")
+        self.assertEqual(today["site"]["new_worker_day"], 1)
+        self.assertEqual(tomorrow["site"]["new_worker_day"], 2)
+
+    def test_impact_is_counted_once_per_site_day(self):
+        _, demo = call("POST", "/api/demo", ip="3.3.3.3")
+        sid = demo["site_id"]
+        site = service.store.get_site(sid)
+        _, plan = service.compute(site, service.today())
+        self.assertTrue(service.record_impact(sid, site, service.today(), plan))
+        self.assertFalse(service.record_impact(sid, site, service.today(), plan))
 
     def test_incident_amber_then_worse_escalates(self):
         _, demo = call("POST", "/api/demo", ip="5.5.5.5")
@@ -163,6 +193,9 @@ class ApiFlow(unittest.TestCase):
         text, used = agent._rule_based("एक मज़दूर को चक्कर आ रहा है और उल्टी हो रही है", tools, "hi")
         self.assertEqual(used, ["first_aid"])
         self.assertIn("थकावट", text)
+        res = agent.ask(service.DEMO_SITE, "एक मज़दूर को चक्कर आ रहा है और उल्टी हो रही है")
+        self.assertEqual(res["protocol"]["level"], "amber")  # fixed guideline text travels with the answer
+        self.assertEqual(res["trace"][0]["tool"], "first_aid")
         text, used = agent._rule_based("kal subah 7 baje se 3 ghante chhat ka kaam?", tools, "hi")
         self.assertEqual(used, ["check_task"])
         self.assertIn("07:00–10:00", text)
@@ -204,6 +237,7 @@ class MantleAgent(unittest.TestCase):
         self.assertEqual(res["engine"], "bedrock-mantle")
         self.assertEqual(res["tools_used"], ["check_task"])
         self.assertIn("17:00", res["answer"])
+        self.assertEqual(res["trace"], [{"tool": "check_task", "args": {"day": "tomorrow", "start_hour": 14, "hours": 2}}])
         tool_msg = seen[1]["messages"][-1]
         self.assertEqual(tool_msg["role"], "tool")
         self.assertIn("best", json.loads(tool_msg["content"]))  # the real planner output went back to the model

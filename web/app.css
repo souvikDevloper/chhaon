@@ -64,7 +64,7 @@ main { flex: 1; padding: 16px 16px 112px; }
 .lead { color: var(--ink-2); margin: 0 0 16px; max-width: 60ch; }
 
 /* ---------- bottom tabs ---------- */
-.tabs { position: fixed; bottom: 0; left: 0; right: 0; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--paper); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); z-index: 5; }
+.tabs { position: fixed; bottom: 0; left: 0; right: 0; display: grid; grid-template-columns: repeat(3, 1fr); background: var(--paper); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); z-index: 5; }
 @media (min-width: 521px) { .tabs { position: sticky; } }
 .tabs a { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px 10px; text-decoration: none; color: var(--ink-2); font-size: 15px; font-weight: 600; min-height: 64px; }
 .tabs a svg { width: 26px; height: 26px; }
@@ -132,9 +132,11 @@ main { flex: 1; padding: 16px 16px 112px; }
 .strip .bar.b-danger { background: var(--danger-tint); } .b-danger .fill { background: var(--danger); }
 .strip .bar.b-extreme { background: var(--extreme-tint); } .b-extreme .fill { background: var(--extreme); }
 .strip .bar.b-stop { background: repeating-linear-gradient(135deg, var(--stop) 0 5px, #9a3a3a 5px 10px); }
-.strip .w { font-size: 11px; text-align: center; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.strip .t { font-size: 12px; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
-.strip.normal .bar.over::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 6px; background: var(--extreme); }
+.strip .w { font-size: 13px; font-weight: 700; text-align: center; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.strip .t { font-size: 15px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+.periods { display: grid; gap: 3px; margin-top: 4px; }
+.periods span { font-size: 13px; font-weight: 700; color: var(--ink-2); text-align: center; border-top: 2px solid var(--line); padding-top: 2px; }
+.strip.normal .bar.over::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 10px; background: var(--extreme); }
 .strip.normal .bar.worked { background: #9fb1ad; }
 .strip.normal .bar.worked.over { background: #9fb1ad; }
 .legend { font-size: 14px; color: var(--ink-2); margin: 8px 0 0; }
@@ -256,3 +258,27 @@ main { flex: 1; padding: 16px 16px 112px; }
 .contrast p { margin: 0 0 8px; }
 .contrast .hot { font-size: 18px; color: var(--ink-2); }
 .contrast .bad { font-size: 22px; font-weight: 800; color: var(--extreme); }
+
+/* announcements stay on across tabs */
+.speakerbar { display: block; position: sticky; top: 0; z-index: 4; background: var(--shade-deep); color: #fff; text-decoration: none; font-weight: 700; font-size: 16px; padding: 8px 16px; }
+/* water, crew voice note, shade option */
+.water { margin-top: 10px; padding: 10px 12px; background: #e3f0f7; border-radius: var(--radius-s); font-size: 16px; font-weight: 600; }
+.crew-card .btn { font-size: 18px; }
+.shade-card { border-color: var(--shade); background: var(--shade-tint); }
+.shade-card p { font-size: 17px; font-weight: 600; }
+.replay-card { display: block; margin-top: 22px; padding: 14px 16px; border: 1px dashed var(--line); border-radius: var(--radius-l); font-weight: 700; text-decoration: none; color: var(--shade-deep); }
+/* unwell: 108 always first */
+.call-top { margin: 0 0 14px; font-size: 20px; min-height: 58px; }
+/* ask: evidence */
+.trace { margin-top: 8px; font-size: 14px; color: var(--ink-2); }
+.trace code { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 6px; background: var(--mist); border-radius: 6px; font-size: 13px; }
+.protocol { margin-top: 10px; padding: 12px; border: 2px solid var(--extreme); border-radius: var(--radius-s); }
+.protocol .steps li { font-size: 16px; }
+.protocol .btn { margin-top: 10px; }
+/* today's work type, one tap */
+.workpick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 0 0 12px; }
+.workpick button { min-height: 44px; border: 2px solid var(--line); background: var(--paper); border-radius: var(--radius-s); font-weight: 700; font-size: 15px; line-height: 1.15; padding: 4px 2px; cursor: pointer; }
+.workpick button[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: #fff; }
+.icon-btn.mic.on { background: var(--extreme); border-color: var(--extreme); color: #fff; animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 8px rgba(183, 37, 25, .18); } }
+.qa .via { font-size: 13px; font-weight: 700; color: var(--ink-2); background: var(--mist); border-radius: 6px; padding: 1px 6px; }

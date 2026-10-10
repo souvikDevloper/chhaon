@@ -115,6 +115,28 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(worked, [9, 10, 11, 12, 14, 15, 16, 17])
         self.assertEqual(p.crew.shortfall_minutes, 0)
 
+    def test_cool_day_heavy_work_is_normal(self):
+        # heavy work is never screened for a full hour, but that alone is not heat stress
+        hourly = synthetic_hourly("2024-05-30", 22, 15, 40, 70, self.lat, self.lon)
+        _, p = self.plan(hourly, workload="heavy", new_workers=3, new_worker_day=1)
+        self.assertEqual(p.verdict, "normal")
+        self.assertEqual(p.unsafe_hours_normal, 0)
+        self.assertEqual(p.worker_hours_protected, 0)
+        self.assertEqual(p.crew.first_start, "09:00")
+        self.assertEqual(p.crew.target_minutes, 8 * 45)
+        self.assertEqual(p.crew.shortfall_minutes, 0)
+        self.assertIsNone(p.water_litres_total)
+        # no heat, so no acclimatisation cut for new workers
+        self.assertEqual(p.new_workers.planned_minutes, p.crew.planned_minutes)
+
+    def test_impact_counts_only_heat(self):
+        hourly = synthetic_hourly("2024-05-30", 39, 27, 30, 70, self.lat, self.lon)
+        _, p = self.plan(hourly, workload="heavy", crew=20)
+        normal = [h for h in p.crew.hours if h.in_normal_shift]
+        self.assertEqual(p.unsafe_hours_normal, sum(1 for h in normal if h.safe_minutes < 45))
+        self.assertAlmostEqual(p.worker_hours_protected, round(sum(45 - min(45, h.safe_minutes) for h in normal) * 20 / 60, 1))
+        self.assertGreater(p.water_litres_total, 0)
+
     def test_new_workers_get_less_and_stricter(self):
         hourly = synthetic_hourly("2024-05-30", 40, 29, 35, 70, self.lat, self.lon)
         _, p = self.plan(hourly, workload="moderate", new_workers=4, new_worker_day=2)
@@ -188,3 +210,17 @@ class ProtocolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OfflineProtocolTests(unittest.TestCase):
+    def test_web_copy_matches_server(self):
+        import json
+        import re
+        from pathlib import Path
+
+        js = (Path(__file__).resolve().parents[2] / "web" / "protocol.js").read_text(encoding="utf-8")
+        data = json.loads(re.search(r"export const PROTOCOL = (\{.*?\});\n", js, re.S).group(1))
+        self.assertEqual(data["steps"], protocol.STEPS)
+        self.assertEqual(data["titles"], protocol.TITLES)
+        self.assertEqual(data["red"], list(protocol.RED_FLAGS))
+        self.assertEqual(data["amber"], list(protocol.AMBER))

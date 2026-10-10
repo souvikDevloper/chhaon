@@ -1,4 +1,6 @@
 import { STR } from "./i18n.js";
+import { classify as classifyLocal, guidance as guidanceLocal } from "./protocol.js";
+import { listen } from "./listen.js";
 
 // ---------------- state & storage ----------------
 const store = {
@@ -21,6 +23,11 @@ const S = {
   wakeLock: null,
   audioUnlocked: false,
   offline: false,
+  feedTimer: null,
+  tickTimer: null,
+  dayAudio: null, // today's announcements with their audio, cached for offline playback
+  played: new Set(),
+  listening: null, // an open Transcribe stream
 };
 const t = () => STR[S.lang];
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -33,7 +40,26 @@ function istNow() {
   return { h, m, hhmm: `${parts.hour}:${parts.minute}`, mins: h * 60 + m };
 }
 const toMins = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
-const fmtTime = (iso) => new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(iso));
+const hhmmOf = (iso) => new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(iso));
+const fmtTime = (iso) => say(hhmmOf(iso));
+
+// how people say a time: "दोपहर 1 बजे", "शाम साढ़े 4 बजे"; "1 PM", "4:30 PM" (same rules as the spoken announcements)
+function say(hhmm, lang = S.lang) {
+  if (!hhmm) return "";
+  let [h, m] = hhmm.split(":").map(Number);
+  h %= 24;
+  const h12 = h % 12 || 12;
+  if (lang === "en") return m ? `${h12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}` : `${h12} ${h < 12 ? "AM" : "PM"}`;
+  const period = h >= 4 && h < 12 ? "सुबह" : h >= 12 && h < 16 ? "दोपहर" : h >= 16 && h < 20 ? "शाम" : "रात";
+  const clock = m === 0 ? `${h12} बजे` : m === 30 ? ({ 1: "डेढ़ बजे", 2: "ढाई बजे" }[h12] || `साढ़े ${h12} बजे`) : m === 15 ? `सवा ${h12} बजे` : m === 45 ? `पौने ${(h12 % 12) + 1} बजे` : `${h12}:${String(m).padStart(2, "0")} बजे`;
+  return `${period} ${clock}`;
+}
+function span(a, b) {
+  if (S.lang !== "hi") return `${say(a)}–${say(b)}`;
+  const [pa, ...ca] = say(a).split(" "), [pb] = say(b).split(" ");
+  // "सुबह 6 से सवा 7 बजे तक", not "सुबह 6 बजे से सुबह सवा 7 बजे तक"
+  return pa === pb ? `${pa} ${ca.join(" ").replace(/ बजे$/, "")} से ${say(b).slice(pb.length + 1)} तक` : `${say(a)} से ${say(b)} तक`;
+}
 
 // ---------------- api ----------------
 async function api(path, opts = {}) {
@@ -80,10 +106,33 @@ function unlockAudio() {
     S.audioUnlocked = true;
   } catch {}
 }
-function play(url) {
+// a two-tone chime so heads turn before the words start (works offline, no file)
+function chime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [[880, 0], [660, 0.28]].forEach(([f, at]) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = f; o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime + at);
+      g.gain.exponentialRampToValueAtTime(0.5, ctx.currentTime + at + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + at + 0.26);
+      o.start(ctx.currentTime + at); o.stop(ctx.currentTime + at + 0.3);
+    });
+    setTimeout(() => ctx.close(), 900);
+  } catch {}
+}
+function play(url, key) {
   if (!url) return;
-  player.src = url;
-  player.play().catch(() => toast(t().listen + " ▶"));
+  const announcement = !!key; // site announcements: chime first, then say it twice over the noise
+  const go = () => {
+    player.src = url;
+    let times = announcement ? 2 : 1;
+    player.onended = () => { if (--times > 0) setTimeout(() => player.play().catch(() => {}), 1200); };
+    player.play().then(() => {
+      if (key && S.siteId) api(`/sites/${S.siteId}/played`, { body: { key } }).catch(() => {});
+    }).catch(() => toast(t().listen + " ▶"));
+  };
+  if (announcement) { chime(); setTimeout(go, 800); } else go();
 }
 async function keepAwake() {
   try { if ("wakeLock" in navigator && !S.wakeLock) S.wakeLock = await navigator.wakeLock.request("screen"); } catch {}
@@ -119,12 +168,12 @@ function shell() {
         <button class="chip-btn" data-action="lang" lang="${S.lang === "hi" ? "en" : "hi"}">${t().lang}</button>
       </header>
       ${S.offline ? `<div class="banner" role="status">${t().offline}</div>` : ""}
+      ${S.speaker && S.siteId ? `<a class="speakerbar" href="#/today" role="status">${esc(t().speakerBar(nextAnnouncement()))}</a>` : ""}
       <main id="main" tabindex="-1"></main>
       ${S.siteId ? `<nav class="tabs" aria-label="Main">
         ${tab("today", "today", I.today, t().tabToday)}
         ${tab("unwell", "unwell", I.unwell, t().tabUnwell, "urgent")}
         ${tab("ask", "ask", I.ask, t().tabAsk)}
-        ${tab("replay", "replay", I.replay, t().tabReplay)}
       </nav>` : ""}
     </div>
     <aside class="tour" aria-label="Guided tour">${tourHtml()}</aside>
@@ -140,14 +189,15 @@ function tourHtml() {
       <li><div><b>${en ? "See today's plan" : "आज का प्लान देखिए"}</b><span>${en ? "Hour-by-hour WBGT for the site, and how the shift moves out of the unsafe hours." : "साइट का हर घंटे का WBGT, और शिफ़्ट ख़तरनाक घंटों से कैसे हटती है।"}</span> <a href="#/today">${en ? "Open" : "खोलिए"}</a></div></li>
       <li><div><b>${en ? "Hear a break, on time" : "ब्रेक की घोषणा सुनिए"}</b><span>${en ? "Turn on announcements, then 'Test announcement in 1 minute'. EventBridge Scheduler fires, Polly speaks Hindi." : "घोषणाएँ चालू करें, फिर '1 मिनट में जाँच'। EventBridge Scheduler चलता है, Polly हिंदी बोलता है।"}</span></div></li>
       <li><div><b>${en ? "Report a dizzy worker" : "चक्कर वाले साथी की सूचना"}</b><span>${en ? "Pick 'Dizzy' and 'Vomiting'. A Step Functions protocol re-checks in 20 s; answer 'Getting worse' to see the emergency path with nearby hospitals." : "'चक्कर' और 'उल्टी' चुनिए। Step Functions 20 सेकंड में दोबारा पूछेगा; 'बिगड़ रहा है' दबाइए।"}</span> <a href="#/unwell">${en ? "Open" : "खोलिए"}</a></div></li>
-      <li><div><b>${en ? "Ask in Hindi" : "हिंदी में पूछिए"}</b><span>${en ? "'कल दोपहर 2 बजे ढलाई कर सकते हैं?' Bedrock answers using the planner as a tool." : "'कल दोपहर 2 बजे ढलाई कर सकते हैं?' Bedrock प्लानर से हिसाब करके बताता है।"}</span> <a href="#/ask">${en ? "Open" : "खोलिए"}</a></div></li>
+      <li><div><b>${en ? "Ask in Hindi" : "हिंदी में पूछिए"}</b><span>${en ? "'कल दोपहर 2 बजे ढलाई कर सकते हैं?' A Strands agent on Bedrock runs the planner as a tool and shows its working." : "'कल दोपहर 2 बजे ढलाई कर सकते हैं?' Bedrock पर Strands एजेंट प्लानर से हिसाब करके बताता है।"}</span> <a href="#/ask">${en ? "Open" : "खोलिए"}</a></div></li>
       <li><div><b>${en ? "Replay 30 May 2024" : "30 मई 2024 दोहराइए"}</b><span>${en ? "Rourkela, the day ten heatstroke deaths were reported. What Chhaon would have said with that day's weather." : "राउरकेला, जिस दिन लू से दस मौतें दर्ज हुईं। उस दिन के मौसम पर छाँव क्या कहता।"}</span> <a href="#/replay/rourkela-2024-05-30">${en ? "Open" : "खोलिए"}</a></div></li>
     </ol>
     <dl class="aws">
       <dt>Lambda</dt><dd>${en ? "WBGT (Liljegren) and the shift planner, deterministic and unit-tested" : "WBGT (Liljegren) और शिफ़्ट प्लानर"}</dd>
       <dt>EventBridge Scheduler</dt><dd>${en ? "one timer per break, deleted after it fires" : "हर ब्रेक का अपना टाइमर"}</dd>
       <dt>Step Functions</dt><dd>${en ? "heat-illness protocol: waits, re-checks, escalation" : "बीमारी प्रोटोकॉल: इंतज़ार, दोबारा जाँच, आगे सूचना"}</dd>
-      <dt>Polly · Bedrock · Location</dt><dd>${en ? "Hindi voice, the assistant, nearest hospitals" : "हिंदी आवाज़, सहायक, नज़दीकी अस्पताल"}</dd>
+      <dt>Polly · Location</dt><dd>${en ? "Hindi voice for breaks and crew voice notes; nearest hospitals" : "ब्रेक और मज़दूरों के लिए हिंदी आवाज़; नज़दीकी अस्पताल"}</dd>
+      <dt>Transcribe · Bedrock · Strands Agents</dt><dd>${en ? "ask by voice in Hindi; the assistant uses the planner as its tools" : "हिंदी में बोलकर पूछिए; सहायक प्लानर को टूल की तरह चलाता है"}</dd>
       <dt>DynamoDB · CloudFront · CloudWatch</dt><dd>${en ? "state, delivery, and an impact dashboard" : "डेटा, डिलीवरी, असर का डैशबोर्ड"}</dd>
     </dl>`;
 }
@@ -174,15 +224,16 @@ function nowState(p) {
   const work = hours.filter((x) => x.work_minutes > 0);
   const nextEv = (p.events || []).find((e) => e.at > n.hhmm);
   let status, sub = "", band = cur && cur.status !== "off" ? (cur.status === "stop" ? "stop" : cur.band) : "shade";
+  const workName = t().workload[p.workload] || t().workload.heavy;
   if (!work.length) { status = t().nowNoWork; band = "stop"; }
-  else if (n.hhmm < work[0].start) { status = t().nowBefore(p.crew.first_start); band = "shade"; }
+  else if (n.hhmm < work[0].start) { status = t().nowBefore(say(p.crew.first_start)); band = "shade"; }
   else if (n.mins >= toMins(p.crew.last_end)) { status = t().nowAfter; band = "shade"; }
   else if (cur && cur.status === "work") {
     if (n.m < cur.work_minutes) { status = t().nowWork(cur.work_minutes, cur.rest_minutes); sub = t().nowWorkLeft(cur.work_minutes - n.m); }
-    else { status = t().nowRest(`${String(n.h + 1).padStart(2, "0")}:00`); }
+    else { status = t().nowRest(say(`${String(n.h + 1).padStart(2, "0")}:00`)); }
   } else if (cur && cur.status === "stop") {
-    const until = (p.crew.stop_windows.find(([a, b]) => a <= n.hhmm && n.hhmm < b) || [null, nextEv?.at || "--"])[1];
-    status = t().nowStop(until);
+    const until = (p.crew.stop_windows.find(([a, b]) => a <= n.hhmm && n.hhmm < b) || [null, nextEv?.at || ""])[1];
+    status = t().nowStop(say(until), workName);
   } else { status = t().nowFree; }
   return { cur, status, sub, band, nextEv, n };
 }
@@ -197,8 +248,20 @@ function stripHtml(hours, mode, nowH) {
     const cls = h.status === "stop" ? "b-stop" : `b-${h.band}`;
     const pct = Math.round((h.work_minutes / 60) * 100);
     const label = `${h.start} WBGT ${h.wbgt}°C, ${h.work_minutes} ${t().minutes}`;
-    return `<div class="h"><span class="w">${Math.round(h.wbgt)}</span><div class="bar ${cls} ${h.hour === nowH ? "now-col" : ""}" title="${esc(label)}" aria-label="${esc(label)}"><div class="fill" style="height:${h.status === "stop" ? 0 : pct}%"></div></div><span class="t">${h.hour}</span></div>`;
-  }).join("")}</div>`;
+    return `<div class="h"><span class="w">${Math.round(h.wbgt)}</span><div class="bar ${cls} ${h.hour === nowH ? "now-col" : ""}" title="${esc(label)}" aria-label="${esc(label)}"><div class="fill" style="height:${h.status === "stop" ? 0 : pct}%"></div></div><span class="t">${h.hour % 12 || 12}</span></div>`;
+  }).join("")}</div>${periodsHtml(cols)}`;
+}
+
+function periodsHtml(cols) {
+  // "सुबह | दोपहर | शाम" under the 12-hour numbers, so 1 and 6 can't be confused
+  const name = (h) => (h < 12 ? "morning" : h < 16 ? "noon" : "evening");
+  const groups = [];
+  for (const c of cols) {
+    const k = name(c.hour);
+    if (groups.length && groups[groups.length - 1].k === k) groups[groups.length - 1].n++;
+    else groups.push({ k, n: 1 });
+  }
+  return `<div class="periods" style="grid-template-columns:${groups.map((g) => `${g.n}fr`).join(" ")}" aria-hidden="true">${groups.map((g) => `<span>${t().periods[g.k]}</span>`).join("")}</div>`;
 }
 
 function fmtDate(iso) {
@@ -223,29 +286,35 @@ function viewToday() {
       <div class="wbgt"><b>${ns.cur ? ns.cur.wbgt.toFixed(1) : "–"}°</b><span>${t().wbgtLabel}<br>${ns.cur ? `${ns.cur.air_temp}°C, ${ns.cur.humidity}%` : ""}</span><button data-action="wbgt-help" aria-label="WBGT?">?</button></div>
     </section>
     <div id="wbgt-help" class="help" hidden>${t().wbgtHelp}</div>
-    ${ns.nextEv ? `<p class="next">${t().next(ns.nextEv.at, t().kinds[ns.nextEv.kind], toMins(ns.nextEv.at) - ns.n.mins)}</p>` : ""}` : `
+    ${ns.nextEv ? `<p class="next">${t().next(say(ns.nextEv.at), t().kinds[ns.nextEv.kind], toMins(ns.nextEv.at) - ns.n.mins)}</p>` : ""}` : `
     <section class="now ${p.verdict === "normal" ? "safe" : p.verdict === "adjusted" ? "caution" : "stop"}">
-      <p class="status">${p.crew.first_start ? t().nowBefore(p.crew.first_start) : t().nowNoWork}</p>
-      <p class="sub">${p.crew.stop_windows.map(([a, b]) => t().nowStop(b).replace(b, `${a}–${b}`)).join(" · ") || t().impactNormal}</p>
-      <div class="wbgt"><b>${p.peak_wbgt?.toFixed(1) ?? "–"}°</b><span>${t().wbgtLabel}<br>${S.lang === "hi" ? "सबसे ज़्यादा" : "peak"} ${p.peak_time ?? ""}</span></div>
+      <p class="status">${p.crew.first_start ? t().nowBefore(say(p.crew.first_start)) : t().nowNoWork}</p>
+      <p class="sub">${p.crew.stop_windows.map(([a, b]) => `${esc(t().workload[p.workload])}: ${span(a, b)} ${S.lang === "hi" ? "बंद" : "stopped"}`).join(" · ") || t().impactNormal}</p>
+      <div class="wbgt"><b>${p.peak_wbgt?.toFixed(1) ?? "–"}°</b><span>${t().wbgtLabel}<br>${S.lang === "hi" ? "सबसे ज़्यादा" : "peak"} ${say(p.peak_time)}</span></div>
     </section>`;
 
   const newbie = p.new_workers && site.new_workers > 0 ? (() => {
-    const w = p.new_workers.hours.filter((h) => h.work_minutes > 0);
-    const when = w.length ? w.map((h) => h.start).join(", ") : "–";
-    return `<p class="note">${esc(t().newWorkers(site.new_workers, site.new_worker_day || 1, p.new_workers.planned_minutes, when))}</p>`;
+    if (p.new_workers.exposure_factor >= 1) return `<p class="note">${esc(t().newWorkersCool(site.new_workers))}</p>`;
+    return `<p class="note">${esc(t().newWorkers(site.new_workers, site.new_worker_day || 1, fmtMins(p.new_workers.planned_minutes), workRanges(p.new_workers.hours) || "–"))}</p>`;
   })() : "";
 
-  const impact = p.verdict === "normal" ? t().impactNormal : t().impact(p.unsafe_hours_avoided, fmtMins(p.crew.planned_minutes), fmtMins(p.crew.target_minutes));
+  const impact = p.verdict === "normal" ? t().impactNormal : t().impact(p.unsafe_hours_avoided, fmtMins(p.crew.planned_minutes), fmtMins(p.crew.target_minutes), Math.round(p.worker_hours_protected));
+  const sh = P.shade;
+  const shadeCard = sh ? `<section class="card shade-card">
+      <h3>${t().shadeTitle}</h3>
+      <p>${esc(t().shade(fmtMins(sh.gain_minutes), sh.gain_worker_hours, sh.stop_windows.map(([a, b]) => span(a, b)).join(", ")))}</p>
+      <p class="small">${t().shadeNote}</p>
+    </section>` : "";
   const feedItems = S.feed.slice(-6).reverse();
   return `
     <div class="site-head">
-      <div><h2>${esc(site.name)}</h2><div class="meta">${esc(t().workload[site.workload])}, ${site.crew} ${t().crew}${site.shaded ? `, ${t().roof}` : ""}</div></div>
+      <div><h2>${esc(site.name)}</h2><div class="meta">${site.crew} ${t().crew}${site.shaded ? `, ${t().roof}` : ""}</div></div>
       <div class="daypick" role="group" aria-label="Day">
         <button data-action="day" data-day="today" aria-pressed="${isToday}">${t().today}</button>
         <button data-action="day" data-day="tomorrow" aria-pressed="${!isToday}">${t().tomorrow}</button>
       </div>
     </div>
+    <div class="workpick" role="group" aria-label="${esc(t().siteWork)}">${["light", "moderate", "heavy", "very_heavy"].map((k) => `<button data-action="set-work" data-v="${k}" aria-pressed="${site.workload === k}">${esc(t().workload[k])}</button>`).join("")}</div>
     ${nowCard}
     <section class="plan">
       <h3>${isToday ? t().planTitle : t().planTitleTomorrow}</h3>
@@ -255,10 +324,16 @@ function viewToday() {
       ${stripHtml(p.crew.hours, "plan", isToday ? ns.n.h : -1)}
       <p class="legend">${t().legend}</p>
       <p class="impact">${esc(impact)}</p>
-      <a class="btn ghost block" style="margin-top:12px" href="${esc(shareUrl(P))}" target="_blank" rel="noopener">${t().share}</a>
-      ${p.crew.shortfall_minutes > 0 ? `<p class="note">${esc(t().shortfall(p.crew.shortfall_minutes))}</p>` : ""}
+      ${p.water_litres_total ? `<p class="water">${esc(t().water(p.water_litres_total, p.water_litres_per_worker))}</p>` : ""}
+      ${p.crew.shortfall_minutes > 0 ? `<p class="note">${esc(t().shortfall(fmtMins(p.crew.shortfall_minutes)))}</p>` : ""}
       ${newbie}
     </section>
+    <section class="card crew-card">
+      <button class="btn block" data-action="brief">${t().brief}</button>
+      <p class="small" style="margin:8px 0 10px">${t().briefHelp}</p>
+      <a class="btn ghost block" href="${esc(shareUrl(P))}" target="_blank" rel="noopener">${t().share}</a>
+    </section>
+    ${shadeCard}
     ${isToday ? `<section class="card">
       <h3>${t().speaker}</h3>
       <p>${S.speaker ? esc(t().speakerOn(p.events.filter((e) => e.at > ns.n.hhmm).length)) : t().speakerOff}</p>
@@ -268,14 +343,15 @@ function viewToday() {
         ${ns.nextEv ? `<button class="btn ghost" data-action="preview" data-kind="${ns.nextEv.kind}" data-minutes="${ns.nextEv.minutes}" data-until="${ns.nextEv.until || ""}">${I.play} ${t().listen}</button>` : ""}
       </div>
       <ul class="feed">${feedItems.length ? feedItems.map(feedItem).join("") : `<li><span class="txt small">${t().feedEmpty}</span></li>`}</ul>
-    </section>` : ""}`;
+    </section>` : ""}
+    <a class="replay-card" href="#/replay/rourkela-2024-05-30">${t().replayCard}</a>`;
 }
 
 function workRanges(hours) {
   const hm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
   const out = [];
   let start = null, last = null;
-  const flush = () => { if (start) out.push(`${start}–${hm(last.hour * 60 + last.work_minutes)}`); start = null; };
+  const flush = () => { if (start) out.push(span(start, hm(last.hour * 60 + last.work_minutes))); start = null; };
   for (const h of hours) {
     if (h.work_minutes > 0) { if (!start) start = h.start; last = h; }
     else flush();
@@ -286,7 +362,7 @@ function workRanges(hours) {
 
 function shareUrl(P) {
   const p = P.plan;
-  const text = t().shareText(P.site.name, fmtDate(P.date), workRanges(p.crew.hours) || "–", p.crew.stop_windows.map(([a, b]) => `${a}–${b}`).join(", "), `${p.peak_time} (WBGT ${p.peak_wbgt}°C)`);
+  const text = t().shareText(P.site.name, fmtDate(P.date), workRanges(p.crew.hours) || "–", p.crew.stop_windows.map(([a, b]) => span(a, b)).join(", "), `${say(p.peak_time)} (WBGT ${p.peak_wbgt}°C)`);
   return `https://wa.me/?text=${encodeURIComponent(text)}`;
 }
 
@@ -304,6 +380,7 @@ function feedItem(f) {
 function viewUnwell() {
   const tile = (k, red) => `<button class="sym ${red ? "red" : ""}" data-action="sym" data-sym="${k}" aria-pressed="${S.selected.has(k)}"><span class="e" aria-hidden="true">${SYM_EMOJI[k]}</span>${esc(t().symptoms[k])}</button>`;
   return `
+    <a class="btn red block call-top" href="tel:108">${t().call108Top}</a>
     <h1 class="view-title">${t().unwellTitle}</h1>
     <p class="lead">${t().unwellLead}</p>
     <div class="sym-group red">${t().redFlags}</div>
@@ -338,6 +415,7 @@ function viewIncident() {
     ${inc.hospitals?.length ? `<h3 style="margin-top:20px">${t().hospitals}</h3><ul class="hosp">${inc.hospitals.map((h) => `<li><b>${esc(h.name)}</b><span class="small">${esc(h.address || "")}${h.distance_m ? ` · ${(h.distance_m / 1000).toFixed(1)} km` : ""}</span><div class="row">${h.phone ? `<a href="tel:${esc(h.phone)}">📞 ${esc(h.phone)}</a>` : ""}<a href="https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lon}" target="_blank" rel="noopener">${t().directions}</a></div></li>`).join("")}</ul>` : ""}
     <h3 style="margin-top:20px">${t().timeline}</h3>
     <ul class="timeline">${inc.timeline.map((x) => `<li><time>${fmtTime(x.t)}</time>${esc(x.kind === "answer" ? t().answers[x.text] || x.text : x.kind === "reported" ? x.text.split(", ").map((s) => t().symptoms[s] || s).join(", ") : x.text)}</li>`).join("")}</ul>
+    ${inc.local ? `<p class="note">${t().offlineIncident}</p>` : ""}
     ${inc.demo ? `<p class="small" style="margin-top:12px">${t().demoNote}</p>` : ""}
     <p class="small">${esc(g.source)}</p>`;
 }
@@ -350,13 +428,15 @@ function viewAsk() {
     <form class="ask-form" data-action="ask">
       <label class="vh" for="q">${t().askTitle}</label>
       <input id="q" name="q" placeholder="${esc(t().askPlaceholder)}" autocomplete="off" maxlength="400">
-      ${("webkitSpeechRecognition" in window || "SpeechRecognition" in window) ? `<button type="button" class="icon-btn" style="width:52px;height:52px" data-action="mic" aria-label="${t().askMic}">🎤</button>` : ""}
+      ${(navigator.mediaDevices?.getUserMedia || "webkitSpeechRecognition" in window) ? `<button type="button" class="icon-btn mic ${S.listening ? "on" : ""}" style="width:52px;height:52px" data-action="mic" aria-label="${t().askMic}">🎤</button>` : ""}
       <button class="btn" type="submit">${t().askSend}</button>
     </form>
     <div class="qa">${S.qa.map((x, i) => `
-      <p class="q">${esc(x.q)}</p>
+      <p class="q">${x.via === "transcribe" ? `<span class="via">🎤 Amazon Transcribe</span> ` : ""}${esc(x.q)}</p>
       <div class="a">${x.a ? esc(x.a.answer) : esc(t().askThinking)}</div>
-      ${x.a ? `<div class="ev">${x.a.model_unavailable ? esc(t().askFallback) : esc(t().askEvidence((x.a.tools_used || []).join(", ") || "plan"))}${x.a.engine && x.a.engine !== "rules" ? ` · Amazon Bedrock${x.a.model ? ` · ${esc(String(x.a.model).split(".").pop())}` : ""}` : ""}</div>
+      ${x.a?.protocol ? `<div class="protocol"><b>${t().askProtocol}: ${esc(x.a.protocol.title)}</b><ol class="steps">${x.a.protocol.steps.map((st) => `<li><span>${esc(st)}</span></li>`).join("")}</ol>${x.a.protocol.call_108 ? `<a class="btn red block" href="tel:108">📞 ${t().call108}</a>` : ""}</div>` : ""}
+      ${x.a?.trace?.length ? `<div class="trace">${t().askTrace}: ${x.a.trace.map((c) => `<code>${esc(c.tool)}(${esc(Object.entries(c.args || {}).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join("+") : v}`).join(", "))})</code>`).join(" ")}</div>` : ""}
+      ${x.a ? `<div class="ev">${x.a.model_unavailable ? esc(t().askFallback) : esc(t().askEvidence((x.a.tools_used || []).join(", ") || "plan"))}${x.a.engine && x.a.engine !== "rules" ? `${x.a.engine.startsWith("strands") ? " · Strands Agents" : ""} · Amazon Bedrock${x.a.model ? ` · ${esc(String(x.a.model).split(".").pop())}` : ""}` : ""}</div>
       <button class="btn ghost" style="margin-top:8px" data-action="speak" data-i="${i}">${I.play} ${t().speakAnswer}</button>` : ""}`).reverse().join("")}</div>`;
 }
 
@@ -373,30 +453,30 @@ function viewReplay(key) {
   const R = replayData[key];
   if (!R) return `<div class="skeleton"></div>`;
   const p = R.plan, m = R.replay;
-  const stops = p.crew.stop_windows.map(([a, b]) => `${a}–${b}`).join(", ") || "–";
+  const stops = p.crew.stop_windows.map(([a, b]) => span(a, b)).join(", ") || "–";
   const cols = p.crew.hours.filter((h) => h.status !== "off" || h.in_normal_shift);
-  const official = m.official_window ? `<div class="strip-label">${esc(t().replayOfficial(m.official_window[0], m.official_window[1]))}</div>
+  const official = m.official_window ? `<div class="strip-label">${esc(t().replayOfficial(say(m.official_window[0]), say(m.official_window[1])))}</div>
     <div class="official" style="display:grid;grid-template-columns:repeat(${cols.length},minmax(0,1fr))">${cols.map((h) => `<span style="background:${h.start >= m.official_window[0] && h.start < m.official_window[1] ? "var(--ink)" : "transparent"}"></span>`).join("")}</div>` : "";
   return `
     <a href="#/replay" class="small">${t().replayTitle}</a>
     <h1 class="view-title">${esc(m.place)}<br>${esc(fmtDate(m.date))}</h1>
     <section class="now stop"><p class="status">${esc(t().replayVerdict(stops))}</p>
-      <div class="wbgt"><b>${p.peak_wbgt?.toFixed(1)}°</b><span>${t().wbgtLabel}<br>${S.lang === "hi" ? "सबसे ज़्यादा" : "peak"} ${p.peak_time}</span></div></section>
+      <div class="wbgt"><b>${p.peak_wbgt?.toFixed(1)}°</b><span>${t().wbgtLabel}<br>${S.lang === "hi" ? "सबसे ज़्यादा" : "peak"} ${say(p.peak_time)}</span></div></section>
     <section class="plan">
       <div class="strip-label">${t().normalRow}</div>${stripHtml(p.crew.hours, "normal")}
       <div class="strip-label">${t().chhaonRow} (${esc(t().workload[p.workload])})</div>${stripHtml(p.crew.hours, "plan", -1)}
       ${official}
       <p class="legend">${t().legend}</p>
-      <p class="impact">${esc(t().impact(p.unsafe_hours_avoided, fmtMins(p.crew.planned_minutes), fmtMins(p.crew.target_minutes)))}</p>
+      <p class="impact">${esc(t().impact(p.unsafe_hours_avoided, fmtMins(p.crew.planned_minutes), fmtMins(p.crew.target_minutes), Math.round(p.worker_hours_protected)))}</p>
     </section>
     ${(() => {
       const day = p.crew.hours.filter((h) => h.hour >= 6 && h.hour < 19);
       const hot = day.reduce((a, b) => (b.air_temp > a.air_temp ? b : a));
       const bad = day.reduce((a, b) => (b.wbgt > a.wbgt ? b : a));
       const outside = m.official_window ? day.filter((h) => h.status === "stop" && !(h.start >= m.official_window[0] && h.start < m.official_window[1])).length : 0;
-      return `<div class="card contrast"><p class="hot">${esc(t().hottestAir(hot.start, hot.air_temp))}</p><p class="bad">${esc(t().mostDangerous(bad.start, bad.wbgt))}</p>${bad.hour !== hot.hour ? `<p>${esc(t().thermoWrong)}</p>` : ""}${outside ? `<p><b>${esc(t().outsideBan(outside))}</b></p>` : ""}</div>`;
+      return `<div class="card contrast"><p class="hot">${esc(t().hottestAir(say(hot.start), hot.air_temp))}</p><p class="bad">${esc(t().mostDangerous(say(bad.start), bad.wbgt))}</p>${bad.hour !== hot.hour ? `<p>${esc(t().thermoWrong(say(hot.start), say(bad.start)))}</p>` : ""}${outside ? `<p><b>${esc(t().outsideBan(outside))}</b></p>` : ""}</div>`;
     })()}
-    <div class="quote"><b>${t().replayWhat}</b><br>${esc(m.what_happened)} <a href="${esc(m.source_url)}" target="_blank" rel="noopener">${esc(m.source)}</a></div>
+    <div class="quote"><b>${t().replayWhat}</b><br>${esc((S.lang === "hi" && m.what_happened_hi) || m.what_happened)} <a href="${esc(m.source_url)}" target="_blank" rel="noopener">${esc(m.source)}</a></div>
     <p class="small" style="margin-top:12px">${t().replayData}</p>`;
 }
 
@@ -468,6 +548,49 @@ function render() {
 
 function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 
+// ---------------- announcements: keep running on every tab ----------------
+// The feed (written by the Lambda that EventBridge Scheduler fires) is polled while
+// announcements are on, whatever screen is open. If the network drops, today's audio was
+// cached at publish time and a local clock plays each break anyway.
+const dayKey = () => `${S.siteId}.${istDate()}`;
+function istDate() { return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()); }
+function nextAnnouncement() {
+  const n = istNow();
+  const evs = S.dayAudio?.events || (S.day === "today" ? S.payload?.plan?.events : null) || [];
+  const e = evs.find((x) => x.at > n.hhmm);
+  return e ? `${say(e.at)} · ${t().kinds[e.kind] || ""}` : "";
+}
+function startAnnouncer() {
+  if (!S.feedTimer) S.feedTimer = setInterval(loadFeed, 10000);
+  if (!S.tickTimer) S.tickTimer = setInterval(localTick, 15000);
+  if (!S.dayAudio) S.dayAudio = store.get(`audio.${dayKey()}`);
+}
+function localTick() {
+  if (!S.speaker || !S.dayAudio) return;
+  const n = istNow();
+  for (const e of S.dayAudio.events) {
+    const k = `${istDate()}|${e.at}|${e.kind}`;
+    const late = n.mins - toMins(e.at);
+    // the feed normally plays it within seconds; fall back to the cached audio after a minute
+    if (late >= 1 && late < 3 && !S.played.has(k)) { S.played.add(k); play(e.audio, k); }
+  }
+  const bar = $(".speakerbar");
+  if (bar) bar.textContent = t().speakerBar(nextAnnouncement()); // don't re-render: it would clear typed input
+}
+async function cacheAudio(urls) {
+  try { const c = await caches.open("chhaon-audio-v1"); await Promise.all(urls.map((u) => c.match(u).then((hit) => hit || c.add(u)).catch(() => {}))); } catch {}
+}
+async function flushQueued() {
+  const q = store.get("queue.incidents", []);
+  if (!q.length) return;
+  const left = [];
+  for (const item of q) {
+    try { await api(`/sites/${item.site}/incidents`, { body: item.body }); } catch { left.push(item); }
+  }
+  store.set("queue.incidents", left);
+  if (left.length < q.length) toast(t().queuedSent, 5000);
+}
+
 async function onRoute() {
   clearTimers();
   const parts = location.hash.slice(2).split("/");
@@ -475,11 +598,14 @@ async function onRoute() {
   if (route !== "site") draft = null;
   render();
   window.scrollTo(0, 0);
+  if (S.speaker) startAnnouncer();
   if (route === "today" && S.siteId) {
     await loadPlan();
     await loadFeed();
-    S.timers.push(setInterval(loadFeed, 10000));
+    if (!S.speaker) S.timers.push(setInterval(loadFeed, 10000));
     S.timers.push(setInterval(() => { if (location.hash.startsWith("#/today")) render(); }, 30000));
+  } else if (route === "incident" && parts[1] === "local") {
+    if (!S.incident?.local) location.hash = "#/unwell";
   } else if (route === "incident" && parts[1]) {
     await loadIncident(parts[1]);
     S.timers.push(setInterval(() => loadIncident(parts[1]), 3000));
@@ -504,7 +630,7 @@ async function loadPlan() {
   const key = `plan.${S.siteId}.${S.day}`;
   try {
     S.payload = await api(`/sites/${S.siteId}/plan?day=${S.day}`);
-    S.speaker = !!store.get(`speaker.${S.siteId}.${S.payload.date}`) && S.day === "today";
+    if (S.day === "today") { S.speaker = !!store.get(`speaker.${S.siteId}.${S.payload.date}`); if (S.speaker) startAnnouncer(); }
     store.set(key, S.payload);
   } catch (e) {
     if (e.status === 404) { store.del("site"); S.siteId = null; location.hash = "#/welcome"; return; }
@@ -521,13 +647,17 @@ async function loadFeed() {
     const fresh = items.filter((f) => !S.lastFeedTs || f.ts > S.lastFeedTs);
     if (S.lastFeedTs && S.speaker) {
       const ann = fresh.filter((f) => f.type === "announcement").pop();
-      if (ann) play(ann.audio?.[ann.lang] || Object.values(ann.audio || {})[0]);
+      if (ann) {
+        const k = `${ann.date || istDate()}|${ann.at}|${ann.kind}`;
+        if (!S.played.has(k)) { S.played.add(k); play(ann.audio?.[ann.lang] || Object.values(ann.audio || {})[0], k); }
+      }
     }
     if (items.length) S.lastFeedTs = items[items.length - 1].ts;
     else if (!S.lastFeedTs) S.lastFeedTs = new Date(0).toISOString();
     const changed = fresh.length > 0 || S.feed.length !== items.length;
     S.feed = items;
     if (changed && location.hash.startsWith("#/today")) render();
+    flushQueued();
   } catch {}
 }
 
@@ -548,13 +678,25 @@ const actions = {
     catch (e) { toast(e.message); btn.disabled = false; }
   },
   async day(btn) { S.day = btn.dataset.day; S.payload = null; render(); await loadPlan(); },
+  async "set-work"(btn) {
+    // the task mix changes day to day (ढलाई, चिनाई, सरिया): one tap re-plans for today's work
+    if (!S.payload || S.payload.site.workload === btn.dataset.v) return;
+    btn.disabled = true;
+    try {
+      await api(`/sites/${S.siteId}`, { method: "PUT", body: { workload: btn.dataset.v } });
+      S.payload = null; render(); await loadPlan();
+      if (S.speaker && S.day === "today") actions["speaker-on"]({ disabled: false });
+    } catch (e) { toast(e.message); btn.disabled = false; }
+  },
   "wbgt-help"() { const el = $("#wbgt-help"); if (el) el.hidden = !el.hidden; },
   async "speaker-on"(btn) {
     unlockAudio();
     btn.disabled = true;
     try {
-      const r = await api(`/sites/${S.siteId}/publish`, { body: { day: "today" } });
+      const r = await api(`/sites/${S.siteId}/publish`, { body: { day: "today" }, timeout: 40000 });
       S.speaker = true; store.set(`speaker.${S.siteId}.${S.payload.date}`, true);
+      if (r.events?.length) { S.dayAudio = { events: r.events }; store.set(`audio.${dayKey()}`, S.dayAudio); cacheAudio([...new Set(r.events.map((e) => e.audio))]); }
+      startAnnouncer();
       keepAwake();
       toast(t().speakerOn(r.schedules));
       render();
@@ -562,7 +704,7 @@ const actions = {
   },
   async "test-announce"(btn) {
     unlockAudio();
-    S.speaker = true; keepAwake();
+    S.speaker = true; keepAwake(); startAnnouncer();
     btn.disabled = true;
     try { const r = await api(`/sites/${S.siteId}/test-announcement`, { body: {} }); toast(t().testQueued(fmtTime(r.fires_at)), 6000); }
     catch (e) { toast(e.message); }
@@ -581,11 +723,36 @@ const actions = {
   async "start-incident"(btn) {
     if (!S.selected.size) return toast(t().pickOne);
     btn.disabled = true;
+    const body = { symptoms: [...S.selected], worker: $("#worker")?.value || undefined, lang: S.lang };
     try {
-      const inc = await api(`/sites/${S.siteId}/incidents`, { body: { symptoms: [...S.selected], worker: $("#worker")?.value || undefined, lang: S.lang } });
+      const inc = await api(`/sites/${S.siteId}/incidents`, { body, timeout: 8000 });
       S.selected.clear(); S.incident = inc;
       location.hash = `#/incident/${inc.id}`;
-    } catch (e) { toast(e.message); btn.disabled = false; }
+    } catch (e) {
+      if (e.status && e.status < 500) { toast(e.message); btn.disabled = false; return; }
+      // no network: the same national first-aid steps, from the copy in protocol.js; report later
+      const level = classifyLocal(body.symptoms);
+      store.set("queue.incidents", [...store.get("queue.incidents", []), { site: S.siteId, body }]);
+      S.selected.clear();
+      S.incident = { id: "local", local: true, level, status: "open", worker: body.worker || (S.lang === "hi" ? "साथी" : "Worker"), symptoms: body.symptoms, guidance: guidanceLocal(level, S.lang), hospitals: [], pending: null, timeline: [{ t: new Date().toISOString(), kind: "reported", text: body.symptoms.join(", ") }] };
+      location.hash = "#/incident/local";
+    }
+  },
+  async brief(btn) {
+    btn.disabled = true;
+    try {
+      const r = await api(`/sites/${S.siteId}/brief`, { body: { day: S.day, lang: S.payload?.site?.lang || "hi" }, timeout: 30000 });
+      const url = new URL(r.audio, location.origin).href;
+      let shared = false;
+      try {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], `chhaon-${r.date}.mp3`, { type: "audio/mpeg" });
+        if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], text: r.text }); shared = true; }
+      } catch (e) { if (e.name === "AbortError") shared = true; }
+      if (!shared) { play(r.audio); window.open(`https://wa.me/?text=${encodeURIComponent(`${r.text}\n🔊 ${url}`)}`, "_blank", "noopener"); }
+      toast(t().briefReady);
+    } catch (e) { toast(e.message); }
+    btn.disabled = false;
   },
   async answer(btn) {
     btn.disabled = true;
@@ -593,9 +760,21 @@ const actions = {
     catch (e) { toast(e.message); btn.disabled = false; }
   },
   chip(btn) { const q = $("#q"); if (q) { q.value = btn.textContent; askNow(q.value); } },
-  mic() {
+  async mic(btn) {
+    if (S.listening) { S.listening.stop(); return; }
+    // Amazon Transcribe streaming (hi-IN) first; the browser's own recogniser if that fails
+    try {
+      const signed = await api("/listen", { body: { lang: S.lang }, timeout: 8000 });
+      btn.classList.add("on");
+      toast(t().askListening, 2500);
+      S.listening = await listen(signed, (text) => { const q = $("#q"); if (q) q.value = text; }, (text) => {
+        S.listening = null; $(".mic")?.classList.remove("on");
+        if (text) askNow(text, "transcribe"); else toast(t().askHeardNothing);
+      });
+      return;
+    } catch (e) { S.listening = null; btn.classList.remove("on"); }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
+    if (!SR) return toast(t().error);
     const rec = new SR();
     rec.lang = S.lang === "hi" ? "hi-IN" : "en-IN";
     rec.onresult = (e) => { const text = e.results[0][0].transcript; const q = $("#q"); if (q) q.value = text; askNow(text); };
@@ -606,7 +785,9 @@ const actions = {
     const x = S.qa[+btn.dataset.i];
     if (!x?.a) return;
     btn.disabled = true;
-    try { const r = await api(`/sites/${S.siteId}/speak`, { body: { text: x.a.answer, lang: x.a.lang } }); play(r.audio); }
+    // first aid is spoken from the national guideline's own words, not the model's paraphrase
+    const text = x.a.protocol ? [x.a.protocol.title, ...x.a.protocol.steps].join(" ") : x.a.answer;
+    try { const r = await api(`/sites/${S.siteId}/speak`, { body: { text, lang: x.a.lang } }); play(r.audio); }
     catch (e) { toast(e.message); }
     btn.disabled = false;
   },
@@ -653,10 +834,11 @@ function keepDraftInputs() {
   const night = $("#night"); if (night) draft.window_end = night.checked ? 22 : 19;
 }
 
-async function askNow(question) {
+async function askNow(question, via) {
   question = (question || "").trim();
   if (question.length < 2) return;
-  const entry = { q: question, a: null };
+  const q = $("#q"); if (q) q.value = "";
+  const entry = { q: question, a: null, via };
   S.qa.push(entry);
   render();
   try { entry.a = await api("/ask", { body: { site_id: S.siteId, question }, timeout: 40000 }); }
@@ -674,7 +856,7 @@ document.addEventListener("submit", (ev) => {
   if (ev.target.dataset.action === "ask") { ev.preventDefault(); const q = $("#q"); askNow(q.value); q.value = ""; }
 });
 window.addEventListener("hashchange", onRoute);
-window.addEventListener("online", () => { S.offline = false; onRoute(); });
+window.addEventListener("online", () => { S.offline = false; flushQueued(); onRoute(); });
 window.addEventListener("offline", () => { S.offline = true; render(); });
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
