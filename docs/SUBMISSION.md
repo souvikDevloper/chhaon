@@ -1,7 +1,7 @@
 # Chhaon: submission writeup
 
 **Track:** Heat and Water (heatwaves) · **Team:** Souvik Ghosh · **Built:** 8–11 October 2026
-**Live:** https://d2cvj3mcid9pim.cloudfront.net · **Code:** https://github.com/souvikDevloper/chhaon · **Video:** _YouTube link_
+**Live:** https://d2cvj3mcid9pim.cloudfront.net · **Code:** https://github.com/souvikDevloper/chhaon · **Video:** https://www.youtube.com/watch?v=0Vjai6HLI_w
 
 ## The problem
 
@@ -49,4 +49,5 @@ Area forecasts are not site measurements; the WBGT code matches Liljegren's own 
 ## AI tools used
 
 - **Building it:** Claude (Anthropic) as a coding agent for the code, tests, infrastructure and docs.
+- **The demo video:** the voice-over is AI text-to-speech in Microsoft Clipchamp. Apart from the opening site footage and the architecture diagram, everything on screen is the live app and the AWS console.
 - **Inside the product:** OpenAI's open-weight gpt-oss-120b on Amazon Bedrock, driven by the Strands Agents SDK, writes the assistant's answers from planner tool results. No AI model makes a safety decision: WBGT, limits, the shift plan, triage and escalation are deterministic, tested code, and announcements are fixed templates.

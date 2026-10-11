@@ -48,4 +48,8 @@ The thermometer points at the wrong hour. And on the day I started building, in 
 
 Testing it with supervisors on real sites comes first. After that: a WBGT meter on site would beat any forecast; feature-phone voice calls and more languages (Bhojpuri, Bengali, Odia) would reach workers directly; and heat-health data from a hospital could tell us which rules actually save lives.
 
+Demo video (3 min): https://www.youtube.com/watch?v=0Vjai6HLI_w
+
+Try it: https://d2cvj3mcid9pim.cloudfront.net (tap "Open the demo site")
+
 Code: https://github.com/souvikDevloper/chhaon

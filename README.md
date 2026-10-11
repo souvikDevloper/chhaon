@@ -5,7 +5,7 @@
 Environmental Hacks, Bharat Builds Tour 2026 · **Track: Heat and Water** (heatwaves)
 
 - **Live app:** https://d2cvj3mcid9pim.cloudfront.net (tap "Open the demo site"; no sign-up)
-- **Demo video:** _added after recording_
+- **Demo video (3 min):** https://www.youtube.com/watch?v=0Vjai6HLI_w
 - **Architecture:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 <p>
@@ -121,6 +121,6 @@ powershell -File scripts\jobs\web.ps1     # publish web/ to S3 and refresh Cloud
 
 ## Built with
 
-Python, plain JavaScript (no framework, no build step), AWS. AI tools used: **Claude (Anthropic)** as a coding agent. Inside the product, **gpt-oss-120b on Amazon Bedrock** writes the assistant's answers; it never makes a safety decision.
+Python, plain JavaScript (no framework, no build step), AWS. AI tools used: **Claude (Anthropic)** as a coding agent; the demo video's voice-over is AI text-to-speech in Microsoft Clipchamp. Inside the product, **gpt-oss-120b on Amazon Bedrock** writes the assistant's answers; it never makes a safety decision.
 
 MIT licence. Built by Souvik Ghosh during Environmental Hacks, 8–11 October 2026.
