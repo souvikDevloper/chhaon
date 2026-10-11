@@ -302,6 +302,7 @@ function viewToday() {
 
   const newbie = p.new_workers && site.new_workers > 0 ? (() => {
     if (p.new_workers.exposure_factor >= 1) return `<p class="note">${esc(t().newWorkersCool(site.new_workers))}</p>`;
+    if (!(p.new_workers.planned_minutes > 0)) return `<p class="note">${esc(t().newWorkersNone(site.new_workers, site.new_worker_day || 1))}</p>`;
     return `<p class="note">${esc(t().newWorkers(site.new_workers, site.new_worker_day || 1, fmtMins(p.new_workers.planned_minutes), workRanges(p.new_workers.hours) || "–"))}</p>`;
   })() : "";
 
